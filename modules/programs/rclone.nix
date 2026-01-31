@@ -200,6 +200,48 @@ in
                 '';
 
               };
+
+              bisyncs = lib.mkOption {
+                default = { };
+                description = "Bi-directional sync tasks for this remote.";
+                type =
+                  with lib.types;
+                  attrsOf (
+                    lib.types.submodule {
+                      options = {
+                        enable = lib.mkEnableOption "this bisync";
+                        localPath = lib.mkOption {
+                          type = str;
+                          description = "Local directory to sync.";
+                        };
+                        frequency = lib.mkOption {
+                          type = str;
+                          default = "15m";
+                          description = "Systemd time interval for sync frequency (e.g. 15m, 1h).";
+                        };
+                        options = lib.mkOption {
+                          type = attrsOf (
+                            nullOr (oneOf [
+                              bool
+                              int
+                              float
+                              str
+                            ])
+                          );
+                          default = { };
+                          description = "Options passed to rclone bisync.";
+                          apply = lib.mergeAttrs {
+                            create-empty-src-dirs = true;
+                            compare-size = true;
+                            compare-modtime = true;
+                            slow-hash-sync-only = true;
+                            verbose = true;
+                          };
+                        };
+                      };
+                    }
+                  );
+              };
             };
           }
         );
@@ -261,6 +303,7 @@ in
           use a different secret provisioner.
         '';
       };
+
     };
   };
 
@@ -407,12 +450,81 @@ in
             ]
           )
       );
+
+      bisyncUnits =
+        let
+          mkBisync =
+            rem: sync:
+            let
+              remoteName = rem.name;
+              remotePath = sync.name;
+              conf = sync.value;
+              safeName = "rclone-bisync-${remoteName}-${replaceSlashes remotePath}";
+            in
+            lib.optionals conf.enable [
+              # The Service
+              (lib.nameValuePair safeName {
+                Unit = {
+                  Description = "Rclone Bisync ${remoteName}:${remotePath}";
+                  After = "network-online.target";
+                  Wants = [ "network-online.target" ];
+                };
+                Service = {
+                  Type = "oneshot";
+                  Environment = [ "PATH=/run/wrappers/bin" ];
+                  ExecStart = "${lib.getExe cfg.package} bisync ${
+                    lib.cli.toGNUCommandLineShell { } conf.options
+                  } ${remoteName}:${remotePath} ${conf.localPath}";
+                  Restart = "on-failure";
+                };
+              })
+              # The Timer
+              (lib.nameValuePair "${safeName}-timer" {
+                Unit = {
+                  Description = "Timer for Rclone Bisync ${remoteName}:${remotePath}";
+                };
+                Timer = {
+                  OnBootSec = "2m";
+                  OnUnitActiveSec = conf.frequency;
+                };
+                Install.WantedBy = [ "timers.target" ];
+              })
+            ];
+        in
+        lib.listToAttrs (
+          lib.flatten (
+            lib.mapAttrsToList (
+              r-name: r:
+              lib.mapAttrsToList (
+                s-name: s:
+                mkBisync
+                  {
+                    name = r-name;
+                    value = r;
+                  }
+                  {
+                    name = s-name;
+                    value = s;
+                  }
+              ) r.bisyncs
+            ) cfg.remotes
+          )
+        );
+
+      # Split bisyncUnits into services and timers for the final merge
+      bisyncServices = lib.filterAttrs (n: v: !lib.hasSuffix "-timer" n) bisyncUnits;
+      bisyncTimers = lib.mapAttrs' (n: v: lib.nameValuePair (lib.removeSuffix "-timer" n) v) (
+        lib.filterAttrs (n: v: lib.hasSuffix "-timer" n) bisyncUnits
+      );
+
     in
     lib.mkIf cfg.enable {
       home.packages = [ cfg.package ];
       systemd.user.services = lib.mkMerge [
         rcloneConfigService
         mountServices
+        bisyncServices
       ];
+      systemd.user.timers = bisyncTimers;
     };
 }

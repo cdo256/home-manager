@@ -221,7 +221,7 @@ let
 in
 {
 
-  meta.maintainers = [ lib.hm.maintainers.nurelin ];
+  meta.maintainers = [ ];
 
   options.services.kanshi = {
     enable = lib.mkEnableOption "kanshi, a Wayland daemon that automatically configures outputs";
@@ -272,7 +272,7 @@ in
       default = [ ];
       description = ''
         Ordered list of directives.
-        See kanshi(5) for informations.
+        See kanshi(5) for information.
       '';
       example = literalExpression ''
         [

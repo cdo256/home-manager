@@ -19,7 +19,7 @@ in
     package = lib.mkPackageOption pkgs "nix-search-tv" { nullable = true; };
 
     settings = lib.mkOption {
-      type = jsonFormat.type;
+      inherit (jsonFormat) type;
       default = { };
       description = ''
         Configuration written to {file}`$XDG_CONFIG_HOME/nix-search-tv/config.json`.
@@ -80,6 +80,15 @@ in
 
         source.command = "${path} print";
         preview.command = ''${path} preview "{}"'';
+
+        actions.run = {
+          command = ''nix run {replace:s/\/ /#/g}'';
+          mode = "fork";
+        };
+        actions.shell = {
+          command = ''nix shell {replace:s/\/ /#/g}'';
+          mode = "execute";
+        };
       }
     );
   };

@@ -1,5 +1,5 @@
 .PHONY: all all-tests test test-install format
-NIXPKGS_REV := nixpkgs-unstable
+NIXPKGS_REV := nixos-unstable
 NIX_PATH := nixpkgs=https://github.com/NixOS/nixpkgs/archive/${NIXPKGS_REV}.tar.gz
 
 all: all-tests test-install
@@ -17,4 +17,5 @@ test-install:
 	HOME=$(shell mktemp -d) NIX_PATH=${NIX_PATH} nix-shell . -A install
 
 format:
-	nix-shell -p treefmt nixfmt deadnix keep-sorted --run "treefmt --config-file ./treefmt.toml"
+	# added 2026-03-01
+	@echo "run \"nix-shell -A dev --run 'just format'\" instead"

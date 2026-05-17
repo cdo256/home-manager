@@ -31,7 +31,7 @@ let
     in
     "${n}: ${formatValue v}";
 
-  xrdbMerge = "${pkgs.xorg.xrdb}/bin/xrdb -merge ${cfg.path}";
+  xrdbMerge = "${lib.getExe pkgs.xrdb} -merge ${cfg.path}";
 
 in
 {
@@ -104,8 +104,7 @@ in
     home.file.${cfg.path} = {
       text =
         lib.concatStringsSep "\n" (
-          [ ]
-          ++ lib.optional (cfg.extraConfig != "") cfg.extraConfig
+          lib.optional (cfg.extraConfig != "") cfg.extraConfig
           ++ lib.optionals (cfg.properties != null) (lib.mapAttrsToList formatLine cfg.properties)
         )
         + "\n";

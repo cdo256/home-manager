@@ -148,7 +148,7 @@ in
       description = ''
         Whether to enable Vulkan in nixGL wrappers.
 
-        This is disabled by default bacause Vulkan brings in several libraries
+        This is disabled by default because Vulkan brings in several libraries
         that can cause symbol version conflicts in wrapped programs. Your
         mileage may vary.
       '';
@@ -211,7 +211,7 @@ in
 
       makePackageWrapper =
         vendor: environment: pkg:
-        if builtins.isNull cfg.packages then
+        if isNull cfg.packages then
           pkg
         else
           # Wrap the package's binaries with nixGL, while preserving the rest of
@@ -220,7 +220,7 @@ in
             # Leave the name unchanged and rely on the hash to differentiate
             # from the original package. Some modules rely on the package name
             # to e.g. compute config directory paths.
-            name = pkg.name;
+            inherit (pkg) name;
 
             # Make sure this is false for the wrapper derivation, so nix doesn't expect
             # a new debug output to be produced. We won't be producing any debug info
@@ -272,6 +272,26 @@ in
                   src="$(readlink "$dsk")"
                   rm "$dsk"
                   sed "s|${pkg.out}|$out|g" "$src" > "$dsk"
+                done
+
+                # Patch systemd user services
+                for svc in "$out/share/systemd/user"/*.service ; do
+                  if ! grep -q "${pkg.out}" "$svc"; then
+                    continue
+                  fi
+                  src="$(readlink "$svc")"
+                  rm "$svc"
+                  sed "s|${pkg.out}|$out|g" "$src" > "$svc"
+                done
+
+                # Patch DBus services
+                for svc in "$out/share/dbus-1/services"/*.service ; do
+                  if ! grep -q "${pkg.out}" "$svc"; then
+                    continue
+                  fi
+                  src="$(readlink "$svc")"
+                  rm "$svc"
+                  sed "s|${pkg.out}|$out|g" "$src" > "$svc"
                 done
 
                 shopt -u nullglob # Revert nullglob back to its normal default state

@@ -16,6 +16,7 @@ let
   settingsFormat =
     let
       updatesSection = types.submodule {
+        freeformType = tomlFormat.type;
         options = {
           auto_update = lib.mkEnableOption "auto-update";
 
@@ -103,7 +104,7 @@ in
 
     services.tldr-update = mkIf cfg.enableAutoUpdates {
       enable = true;
-      package = cfg.package;
+      inherit (cfg) package;
     };
   };
 }

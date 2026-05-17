@@ -41,8 +41,8 @@ in
     systemd.user.services.pimsync = {
       Unit = {
         Description = "pimsync calendar and contacts synchronization";
-        PartOf = [ "network-online.target" ];
       };
+      Install.WantedBy = [ "default.target" ];
       Service = {
         # TODO: make use of the readiness notification
         Type = "simple";

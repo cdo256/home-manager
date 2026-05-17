@@ -15,7 +15,7 @@ let
     ''}
 
     USE_BACKUP="${if cfg.useBackup then "yes" else "no"}"
-    BACKUP_LIMIT=${builtins.toString cfg.backupLimit}
+    BACKUP_LIMIT=${toString cfg.backupLimit}
   '';
 in
 {
@@ -59,7 +59,7 @@ in
       type = lib.types.bool;
       default = true;
       description = ''
-        Whether to completly enable or disable the crash recovery feature.
+        Whether to completely enable or disable the crash recovery feature.
       '';
     };
 

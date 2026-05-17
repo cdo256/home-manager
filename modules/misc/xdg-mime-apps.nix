@@ -91,6 +91,13 @@ in
         [](#opt-xdg.mimeApps.defaultApplications). If multiple packages
         associate with the same mime type, then the priority among them is
         determined by their order in the list.
+
+        ::: {.note}
+        Passing a large number of packages (for example, the system
+        package set or all of {option}`home.packages`) will
+        significantly slow down builds. Prefer listing only the specific
+        packages whose MIME associations you want to set as defaults.
+        :::
       '';
     };
   };
@@ -142,7 +149,7 @@ in
 
       xdg.configFile."mimeapps.list".source =
         let
-          joinValues = lib.mapAttrs (n: lib.concatStringsSep ";");
+          joinValues = lib.mapAttrs (_n: lib.concatStringsSep ";");
 
           baseFile = (pkgs.formats.ini { }).generate "mimeapps.list" {
             "Added Associations" = joinValues cfg.associations.added;

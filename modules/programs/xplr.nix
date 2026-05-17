@@ -26,7 +26,7 @@ let
     name: value:
     if lib.isStorePath value then
       pkgs.symlinkJoin {
-        name = name;
+        inherit name;
         paths = [ value ];
         postBuild = ''
           mkdir '${name}'
@@ -35,7 +35,7 @@ let
         '';
       }
     else
-      builtins.dirOf value;
+      dirOf value;
 
   makePluginSearchPath = p: "${p}/?/init.lua;${p}/?.lua";
 
@@ -46,9 +46,9 @@ let
         searchPaths = map makePluginSearchPath wrappedPlugins;
         pluginSearchPath = lib.concatStringsSep ";" searchPaths;
       in
-      (''
+      ''
         package.path = "${pluginSearchPath};" .. package.path
-      '')
+      ''
     else
       "\n";
 

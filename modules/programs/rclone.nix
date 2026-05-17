@@ -4,13 +4,143 @@
   pkgs,
   ...
 }:
-
 let
-
   cfg = config.programs.rclone;
-  # iniFormat removed; rclone CLI handles parsing now
+  iniFormat = pkgs.formats.ini { };
   replaceSlashes = builtins.replaceStrings [ "/" ] [ "." ];
+  replaceIllegalChars = builtins.replaceStrings [ "/" " " "$" ] [ "." "_" "" ];
   isUsingSecretProvisioner = name: config ? "${name}" && config."${name}".secrets != { };
+
+  # serve protocols that can use `Type=notify` services, this is determined from rclone source code
+  serveProtocolNotifies = [
+    "dlna"
+    "http"
+    "restic"
+    "webdav"
+  ];
+
+  # options shared between mounts/serve
+  mountServeOptions = {
+    logLevel = lib.mkOption {
+      type = lib.types.enum [
+        null
+        "ERROR"
+        "NOTICE"
+        "INFO"
+        "DEBUG"
+      ];
+      default = null;
+      example = "INFO";
+      description = ''
+        Set the log level. See <https://rclone.org/docs/#logging> for more.
+      '';
+    };
+    options = lib.mkOption {
+      type =
+        with lib.types;
+        attrsOf (
+          nullOr (oneOf [
+            bool
+            int
+            float
+            str
+          ])
+        );
+      default = { };
+      apply = lib.mergeAttrs {
+        vfs-cache-mode = "full";
+        cache-dir = "%C/rclone";
+      };
+      description = ''
+        An attribute set of option values passed to the command.
+        To set a boolean option, assign it `true` or `false`. See
+        <https://nixos.org/manual/nixpkgs/stable/#function-library-lib.cli.toCommandLineShellGNU>
+        for more details on the format.
+
+        Some caching options are set by default, namely `vfs-cache-mode = "full"`
+        and `cache-dir`. These can be overridden if desired.
+      '';
+    };
+  };
+
+  # creates a sidecar user service. returns an attrset of systemd services
+  mkRcloneSidecars =
+    # type of the sidecar, either "mounts" or "serve" corresponding to options
+    sidecarType:
+    lib.listToAttrs (
+      lib.concatMap (
+        _remote: # remote name + remote config
+        let
+          remoteName = _remote.name;
+          remote = _remote.value;
+        in
+        lib.concatMap (
+          _sidecar: # sidecar path + sidecar config
+          let
+            # a sidecar is either a mount or a protocol-serve
+            sidecarPath = _sidecar.name;
+            sidecar = _sidecar.value;
+
+            # there are currently only 2 types mount/serve - this may need changed in the future
+            isMount = sidecarType == "mounts";
+            # name of the rclone command to use - also used in service name
+            cmdName = if isMount then "mount" else "serve";
+          in
+          lib.optional sidecar.enable (
+            lib.nameValuePair "rclone-${cmdName}:${replaceIllegalChars sidecarPath}@${remoteName}" {
+              Unit = {
+                Description = "Rclone ${
+                  if isMount then "FUSE daemon" else "protocol serving"
+                } for ${remoteName}:${sidecarPath}";
+                Requires = [ "rclone-config.service" ];
+                After = [ "rclone-config.service" ];
+              };
+
+              Service = {
+                Type =
+                  # all services can be Type=notify except for serve protocols that don't notify
+                  if sidecarType == "serve" && !(builtins.elem sidecar.protocol serveProtocolNotifies) then
+                    "simple"
+                  else
+                    "notify";
+                Environment =
+                  # fusermount/fusermount3
+                  (lib.optional (sidecarType == "mounts") "PATH=/run/wrappers/bin")
+                  ++ lib.optional (sidecar.logLevel != null) "RCLONE_LOG_LEVEL=${sidecar.logLevel}";
+                # rclone exits with code 143 when stopped properly
+                SuccessExitStatus = "143";
+
+                ExecStartPre = lib.mkIf isMount "${pkgs.coreutils}/bin/mkdir -p ${lib.escapeShellArg sidecar.mountPoint}";
+                ExecStart = lib.concatStringsSep " " (
+                  [ "${lib.getExe cfg.package} ${cmdName}" ] # rclone [command]
+                  ++ (
+                    if isMount then
+                      # https://rclone.org/commands/rclone_mount/
+                      [
+                        (lib.cli.toCommandLineShellGNU { } sidecar.options) # [opts]
+                        (lib.escapeShellArg "${remoteName}:${sidecarPath}") # <remote>
+                        (lib.escapeShellArg sidecar.mountPoint) # <mountpoint>
+                      ]
+                    else
+                      # https://rclone.org/commands/rclone_serve/
+                      [
+                        (lib.escapeShellArg sidecar.protocol) # <protocol>
+                        (lib.cli.toCommandLineShellGNU { } sidecar.options) # [opts]
+                        (lib.escapeShellArg "${remoteName}:${sidecarPath}") # <remote>
+                      ]
+                  )
+                );
+                Restart = "on-failure";
+              };
+
+              Install.WantedBy = lib.optional (
+                if isMount then sidecar.autoMount else sidecar.autoStart
+              ) "default.target";
+            }
+          )
+        ) (lib.attrsToList (remote.${sidecarType} or { }))
+      ) (lib.attrsToList cfg.remotes)
+    );
 
 in
 {
@@ -118,21 +248,8 @@ in
                       options = {
                         enable = lib.mkEnableOption "this mount";
 
-                        logLevel = lib.mkOption {
-                          type = lib.types.nullOr (
-                            lib.types.enum [
-                              "ERROR"
-                              "NOTICE"
-                              "INFO"
-                              "DEBUG"
-                            ]
-                          );
-                          default = null;
-                          example = "INFO";
-                          description = ''
-                            Set the log-level.
-                            See: https://rclone.org/docs/#logging
-                          '';
+                        autoMount = lib.mkEnableOption "automatically mounting the remote on login" // {
+                          default = true;
                         };
 
                         mountPoint = lib.mkOption {
@@ -143,34 +260,8 @@ in
                           '';
                           example = "/home/alice/my-remote";
                         };
-
-                        options = lib.mkOption {
-                          type =
-                            with lib.types;
-                            attrsOf (
-                              nullOr (oneOf [
-                                bool
-                                int
-                                float
-                                str
-                              ])
-                            );
-                          default = { };
-                          apply = lib.mergeAttrs {
-                            vfs-cache-mode = "full";
-                            cache-dir = "%C/rclone";
-                          };
-                          description = ''
-                            An attribute set of option values passed to `rclone mount`. To set
-                            a boolean option, assign it `true` or `false`. See
-                            <https://nixos.org/manual/nixpkgs/stable/#function-library-lib.cli.toGNUCommandLineShell>
-                            for more details on the format.
-
-                            Some caching options are set by default, namely `vfs-cache-mode = "full"`
-                            and `cache-dir`. These can be overridden if desired.
-                          '';
-                        };
-                      };
+                      }
+                      // mountServeOptions;
                     }
                   );
                 default = { };
@@ -241,6 +332,67 @@ in
                       };
                     }
                   );
+              };
+
+              serve = lib.mkOption {
+                type =
+                  with lib.types;
+                  attrsOf (
+                    lib.types.submodule {
+                      options = {
+                        enable = lib.mkEnableOption "serving this path";
+
+                        protocol = lib.mkOption {
+                          type = lib.types.enum [
+                            "dlna"
+                            "docker"
+                            "ftp"
+                            "http"
+                            "nfs"
+                            "restic"
+                            "s3"
+                            "sftp"
+                            "webdav"
+                          ];
+                          description = ''
+                            The protocol to use when serving this path.
+                            See <https://rclone.org/commands/rclone_serve> for more.
+                          '';
+                          example = "http";
+                        };
+
+                        autoStart = lib.mkEnableOption "automatically serving the remote on login" // {
+                          default = true;
+                        };
+                      }
+                      // mountServeOptions;
+                    }
+                  );
+                default = { };
+                description = ''
+                  An attribute set mapping remote file paths to their corresponding serve configurations.
+
+                  For each entry, to perform the equivalent of
+                  `rclone serve protocol remote:path/to/files` — as described in the
+                  rclone documentation <https://rclone.org/commands/rclone_serve/> — we create
+                  a key-value pair like this:
+                  `"path/to/files/on/remote" = { ... }`.
+                '';
+                example = lib.literalExpression ''
+                  {
+                    "path/to/files" = {
+                      enable = true;
+                      protocol = "http";
+                      options = {
+                        addr = "127.0.0.1:3000";
+                        dir-cache-time = "5000h";
+                        poll-interval = "10s";
+                        umask = "002";
+                        user-agent = "Laptop";
+                      };
+                    };
+                  }
+                '';
               };
             };
           }
@@ -399,58 +551,6 @@ in
           };
         };
 
-      mountServices = lib.listToAttrs (
-        lib.concatMap
-          (
-            { name, value }:
-            let
-              remote-name = name;
-              remote = value;
-            in
-            lib.concatMap (
-              { name, value }:
-              let
-                mount-path = name;
-                mount = value;
-              in
-              [
-                (lib.nameValuePair "rclone-mount:${replaceSlashes mount-path}@${remote-name}" {
-                  Unit = {
-                    Description = "Rclone FUSE daemon for ${remote-name}:${mount-path}";
-                  };
-
-                  Service = {
-                    Type = "notify";
-                    Environment = [
-                      # fusermount/fusermount3
-                      "PATH=/run/wrappers/bin"
-                    ]
-                    ++ lib.optional (mount.logLevel != null) "RCLONE_LOG_LEVEL=${mount.logLevel}";
-
-                    ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p ${mount.mountPoint}";
-                    ExecStart = lib.concatStringsSep " " [
-                      (lib.getExe cfg.package)
-                      "mount"
-                      (lib.cli.toGNUCommandLineShell { } mount.options)
-                      "${remote-name}:${mount-path}"
-                      "${mount.mountPoint}"
-                    ];
-                    Restart = "on-failure";
-                  };
-
-                  Install.WantedBy = [ "default.target" ];
-                })
-              ]
-            ) (lib.attrsToList remote.mounts)
-          )
-          (
-            lib.pipe cfg.remotes [
-              lib.attrsToList
-              (lib.filter (rem: rem.value ? mounts))
-            ]
-          )
-      );
-
       bisyncUnits =
         let
           mkBisync =
@@ -522,7 +622,8 @@ in
       home.packages = [ cfg.package ];
       systemd.user.services = lib.mkMerge [
         rcloneConfigService
-        mountServices
+        (mkRcloneSidecars "mounts")
+        (mkRcloneSidecars "serve")
         bisyncServices
       ];
       systemd.user.timers = bisyncTimers;

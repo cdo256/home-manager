@@ -168,8 +168,50 @@ in
         in `kitty-themes`, without the `.conf` suffix. See
         <https://github.com/kovidgoyal/kitty-themes/tree/master/themes> for a
         list of themes.
+
+        Note that if any automatic themes are configured via
+        `programs.kitty.autoThemeFiles`, Kitty will prefer them based on the
+        OS color scheme and they will override other color and background image
+        settings.
       '';
       example = "SpaceGray_Eighties";
+    };
+
+    autoThemeFiles = mkOption {
+      type = types.nullOr (
+        types.submodule {
+          options = {
+            light = mkOption {
+              type = types.str;
+              description = "Theme name for light color scheme.";
+            };
+            dark = mkOption {
+              type = types.str;
+              description = "Theme name for dark color scheme.";
+            };
+            noPreference = mkOption {
+              type = types.str;
+              description = "Theme name for no-preference color scheme.";
+            };
+          };
+        }
+      );
+      default = null;
+      description = ''
+        Configure Kitty automatic color themes. This creates
+        {file}`$XDG_CONFIG_HOME/kitty/light-theme.auto.conf`,
+        {file}`$XDG_CONFIG_HOME/kitty/dark-theme.auto.conf`, and
+        {file}`$XDG_CONFIG_HOME/kitty/no-preference-theme.auto.conf`.
+        Kitty applies these based on the OS color scheme, and they override
+        other color and background image settings.
+      '';
+      example = literalExpression ''
+        {
+          light = "GitHub";
+          dark = "TokyoNight";
+          noPreference = "OneDark";
+        }
+      '';
     };
 
     font = mkOption {
@@ -290,6 +332,46 @@ in
         for the documentation.
       '';
     };
+
+    diffConfig = {
+      settings = mkOption {
+        type = types.attrsOf settingsValueType;
+        default = { };
+        example = literalExpression ''
+          diff_cmd = "auto";
+          mark_moved_lines = true;
+        '';
+        description = ''
+          Configuration written to
+          {file}`$XDG_CONFIG_HOME/kitty/diff.conf`. See
+          <https://sw.kovidgoyal.net/kitty/kittens/diff/>
+          for the documentation.
+
+          Configuration set through the `extraConfig` option will take
+          greater priority.
+        '';
+      };
+      keybindings = mkOption {
+        type = types.attrsOf types.str;
+        default = { };
+        example = literalExpression ''
+          q = "quit";
+          j = "scroll_by 1";
+          k = "scroll_by -1";
+        '';
+        description = ''
+          Mapping of keybindings to use inside kitty's diff tool.
+
+          Configuration set through the `extraConfig` options will take
+          greater priority.
+        '';
+      };
+      extraConfig = mkOption {
+        default = "";
+        type = types.lines;
+        description = "Additional configuration to add kitty's diff.conf";
+      };
+    };
   };
 
   config = mkIf cfg.enable {
@@ -328,11 +410,18 @@ in
           shell_integration ${cfg.shellIntegration.mode}
         ''
       ))
-      (mkOrder 540 (toKittyConfig cfg.settings))
-      (mkOrder 550 (toKittyActionAliases cfg.actionAliases))
-      (mkOrder 560 (toKittyKeybindings cfg.keybindings))
-      (mkOrder 570 (toKittyMouseBindings cfg.mouseBindings))
-      (mkOrder 580 (toKittyEnv cfg.environment))
+      (mkIf (cfg.settings != { }) (mkOrder 540 (toKittyConfig cfg.settings)))
+      (mkIf (cfg.actionAliases != { }) (mkOrder 550 (toKittyActionAliases cfg.actionAliases)))
+      (mkIf (cfg.keybindings != { }) (mkOrder 560 (toKittyKeybindings cfg.keybindings)))
+      (mkIf (cfg.mouseBindings != { }) (mkOrder 570 (toKittyMouseBindings cfg.mouseBindings)))
+      (mkIf (cfg.environment != { }) (mkOrder 580 (toKittyEnv cfg.environment)))
+    ];
+
+    programs.kitty.diffConfig.extraConfig = mkMerge [
+      (mkIf (cfg.diffConfig.settings != { }) (mkOrder 510 (toKittyConfig cfg.diffConfig.settings)))
+      (mkIf (cfg.diffConfig.keybindings != { }) (
+        mkOrder 520 (toKittyKeybindings cfg.diffConfig.keybindings)
+      ))
     ];
 
     xdg.configFile."kitty/kitty.conf" = {
@@ -341,16 +430,13 @@ in
         # See https://sw.kovidgoyal.net/kitty/conf.html
         ${cfg.extraConfig}
       '';
-    }
-    // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
-      onChange = ''
-        ${pkgs.procps}/bin/pkill -USR1 -u $USER kitty || true
-      '';
-    }
-    // lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
-      onChange = ''
-        /usr/bin/pkill -USR1 -u $USER kitty || true
-      '';
+      onChange =
+        let
+          prefix = if pkgs.stdenv.hostPlatform.isDarwin then "/usr" else pkgs.procps;
+        in
+        ''
+          ${prefix}/bin/pkill -USR1 -u $USER kitty || true
+        '';
     };
 
     xdg.configFile."kitty/quick-access-terminal.conf" = mkIf (cfg.quickAccessTerminalConfig != { }) {
@@ -361,15 +447,43 @@ in
       '';
     };
 
-    home.activation.checkKittyTheme = mkIf (cfg.themeFile != null) (
+    xdg.configFile."kitty/diff.conf" = mkIf (cfg.diffConfig != { }) {
+      text = ''
+        # Generated by Home Manager
+        # See https://sw.kovidgoyal.net/kitty/kittens/diff/
+        ${cfg.diffConfig.extraConfig}
+      '';
+    };
+
+    xdg.configFile."kitty/light-theme.auto.conf" = mkIf (cfg.autoThemeFiles != null) {
+      text = "include ${pkgs.kitty-themes}/share/kitty-themes/themes/${cfg.autoThemeFiles.light}.conf\n";
+    };
+
+    xdg.configFile."kitty/dark-theme.auto.conf" = mkIf (cfg.autoThemeFiles != null) {
+      text = "include ${pkgs.kitty-themes}/share/kitty-themes/themes/${cfg.autoThemeFiles.dark}.conf\n";
+    };
+
+    xdg.configFile."kitty/no-preference-theme.auto.conf" = mkIf (cfg.autoThemeFiles != null) {
+      text = "include ${pkgs.kitty-themes}/share/kitty-themes/themes/${cfg.autoThemeFiles.noPreference}.conf\n";
+    };
+
+    home.activation.checkKittyTheme = mkIf (cfg.themeFile != null || cfg.autoThemeFiles != null) (
       let
-        themePath = "${pkgs.kitty-themes}/share/kitty-themes/themes/${cfg.themeFile}.conf";
+        themePath = name: "${pkgs.kitty-themes}/share/kitty-themes/themes/${name}.conf";
+        checkThemeFile = name: ''
+          if [[ ! -f "${themePath name}" ]]; then
+            errorEcho "kitty-themes does not contain the theme file ${themePath name}!"
+            exit 1
+          fi
+        '';
       in
       lib.hm.dag.entryBefore [ "writeBoundary" ] ''
-        if [[ ! -f "${themePath}" ]]; then
-          errorEcho "kitty-themes does not contain the theme file ${themePath}!"
-          exit 1
-        fi
+        ${lib.optionalString (cfg.themeFile != null) (checkThemeFile cfg.themeFile)}
+        ${lib.optionalString (cfg.autoThemeFiles != null) ''
+          ${checkThemeFile cfg.autoThemeFiles.light}
+          ${checkThemeFile cfg.autoThemeFiles.dark}
+          ${checkThemeFile cfg.autoThemeFiles.noPreference}
+        ''}
       ''
     );
 
@@ -392,7 +506,7 @@ in
       };
       difftool = {
         prompt = lib.mkDefault false;
-        trustExistCode = lib.mkDefault true;
+        trustExitCode = lib.mkDefault true;
         kitty = {
           cmd = "kitten diff $LOCAL $REMOTE";
         };

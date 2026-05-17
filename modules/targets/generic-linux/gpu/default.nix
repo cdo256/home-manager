@@ -35,7 +35,7 @@
         enable = mkEnableOption "proprietary Nvidia drivers";
 
         version = mkOption {
-          type = types.nullOr (types.strMatching "[0-9]{3}\\.[0-9]{2,3}\\.[0-9]{2}");
+          type = types.nullOr (types.strMatching "[0-9]{3}\\.[0-9]{2,3}(\\.[0-9]{2,3})?");
           default = null;
           example = literalExpression "550.163.01";
           description = ''
@@ -93,7 +93,7 @@
       # This builds the driver archive downloaded from download.nvidia.com
       nvidia =
         (cfg.packages.linuxPackages.nvidiaPackages.mkDriver {
-          version = cfg.nvidia.version;
+          inherit (cfg.nvidia) version;
           sha256_64bit = cfg.nvidia.sha256;
           sha256_aarch64 = cfg.nvidia.sha256;
           useSettings = false;
@@ -101,7 +101,6 @@
         }).override
           {
             libsOnly = true;
-            kernel = null;
           };
 
       setupPackage = cfg.packages.callPackage ./setup {

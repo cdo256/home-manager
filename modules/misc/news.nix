@@ -53,7 +53,7 @@ let
   );
 
   isNixFile = n: v: v == "regular" && lib.hasSuffix ".nix" n;
-  isDirectory = n: v: v == "directory";
+  isDirectory = _n: v: v == "directory";
 
   # Recursively collect all .nix files from a directory
   collectNixFiles =
@@ -72,7 +72,7 @@ let
     fileList ++ subdirFiles;
 
   newsFiles = collectNixFiles ./news;
-  newsEntries = builtins.map (
+  newsEntries = map (
     newsFile:
     let
       imported = import newsFile;

@@ -14,11 +14,12 @@ let
     ;
 
   cfg = config.programs.opencode;
+  webCfg = cfg.web;
 
   jsonFormat = pkgs.formats.json { };
 
   transformMcpServer = name: server: {
-    name = name;
+    inherit name;
     value = {
       enabled = !(server.disabled or false);
     }
@@ -26,9 +27,9 @@ let
       if server ? url then
         {
           type = "remote";
-          url = server.url;
+          inherit (server) url;
         }
-        // (lib.optionalAttrs (server ? headers) { headers = server.headers; })
+        // (lib.optionalAttrs (server ? headers) { inherit (server) headers; })
       else if server ? command then
         {
           type = "local";
@@ -45,14 +46,45 @@ let
       lib.listToAttrs (lib.mapAttrsToList transformMcpServer config.programs.mcp.servers)
     else
       { };
+
+  packageWithExtraPackages =
+    if cfg.package != null && cfg.extraPackages != [ ] then
+      pkgs.symlinkJoin {
+        inherit (cfg.package) meta;
+        name = "${lib.getName cfg.package}-wrapped-${lib.getVersion cfg.package}";
+        paths = [ cfg.package ];
+        preferLocalBuild = true;
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        postBuild = ''
+          wrapProgram $out/bin/opencode \
+            --suffix PATH : ${lib.makeBinPath cfg.extraPackages}
+        '';
+      }
+    else
+      cfg.package;
+
+  isStorePathString =
+    content: builtins.isString content && lib.hasPrefix "${builtins.storeDir}/" content;
+  isPathLikeContent = content: lib.isPath content || isStorePathString content;
 in
 {
   meta.maintainers = with lib.maintainers; [ delafthi ];
+
+  imports = [
+    (lib.mkRenamedOptionModule [ "programs" "opencode" "rules" ] [ "programs" "opencode" "context" ])
+  ];
 
   options.programs.opencode = {
     enable = mkEnableOption "opencode";
 
     package = mkPackageOption pkgs "opencode" { nullable = true; };
+
+    extraPackages = mkOption {
+      type = with lib.types; listOf package;
+      default = [ ];
+      example = literalExpression "[ pkgs.uv ]";
+      description = "Extra packages available to OpenCode.";
+    };
 
     enableMcpIntegration = mkOption {
       type = lib.types.bool;
@@ -73,29 +105,100 @@ in
       default = { };
       example = literalExpression ''
         {
-          theme = "opencode";
           model = "anthropic/claude-sonnet-4-20250514";
           autoshare = false;
           autoupdate = true;
         }
       '';
       description = ''
-        Configuration written to {file}`$XDG_CONFIG_HOME/opencode/config.json`.
+        Configuration written to {file}`$XDG_CONFIG_HOME/opencode/opencode.json`.
         See <https://opencode.ai/docs/config/> for the documentation.
 
         Note, `"$schema": "https://opencode.ai/config.json"` is automatically added to the configuration.
       '';
     };
 
-    rules = lib.mkOption {
+    tui = mkOption {
+      inherit (jsonFormat) type;
+      default = { };
+      example = literalExpression ''
+        {
+          theme = "system";
+          keybinds = {
+            leader = "alt+b";
+          };
+        }
+      '';
+
+      description = ''
+        TUI-specific configuration written to {file}`$XDG_CONFIG_HOME/opencode/tui.json`.
+
+        This includes theme, keybinds, scroll settings, and other TUI-only options.
+        See <https://opencode.ai/docs/tui#configure> for the documentation.
+
+        Note that `"$schema": "https://opencode.ai/tui.json"` is automatically added.
+
+        Since OpenCode v1.2.15, TUI settings must be in a separate tui.json file.
+        Settings like `theme`, `keybinds`, and `tui` in {option}`programs.opencode.settings`
+        are deprecated and should be moved here.
+      '';
+    };
+
+    web = {
+      enable = lib.mkEnableOption "opencode web service";
+
+      extraArgs = mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [
+          "--hostname"
+          "0.0.0.0"
+          "--port"
+          "4096"
+          "--mdns"
+          "--cors"
+          "https://example.com"
+          "--cors"
+          "http://localhost:3000"
+          "--print-logs"
+          "--log-level"
+          "DEBUG"
+        ];
+        description = ''
+          Extra arguments to pass to the opencode serve command.
+
+          These arguments override the "server" options defined in the configuration file.
+          See <https://opencode.ai/docs/web/#config-file> for available options.
+        '';
+      };
+
+      environmentFile = mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        example = "/run/secrets/opencode-web";
+        description = ''
+          Path to a file containing environment variables for the opencode web
+          service, in the format of an EnvironmentFile as described by
+          {manpage}`systemd.exec(5)` (i.e. `KEY=VALUE` pairs, one per line).
+
+          This is the recommended way to set `OPENCODE_SERVER_PASSWORD` without
+          exposing the secret value in the Nix store.
+        '';
+      };
+    };
+
+    context = lib.mkOption {
       type = lib.types.either lib.types.lines lib.types.path;
       default = "";
       description = ''
-         You can provide global custom instructions to opencode.
-         The value is either:
-         - Inline content as a string
-         - A path to a file containing the content
-        This value is written to {file}`$XDG_CONFIG_HOME/opencode/AGENTS.md`.
+        Global context for OpenCode.
+
+        The value is either:
+        - Inline content as a string
+        - A path to a file containing the content
+
+        The configured content is written to
+        {file}`$XDG_CONFIG_HOME/opencode/AGENTS.md`.
       '';
       example = lib.literalExpression ''
         '''
@@ -126,14 +229,22 @@ in
     };
 
     commands = lib.mkOption {
-      type = lib.types.attrsOf (lib.types.either lib.types.lines lib.types.path);
+      type = lib.types.either (lib.types.attrsOf (lib.types.either lib.types.lines lib.types.path)) lib.types.path;
       default = { };
       description = ''
         Custom commands for opencode.
-        The attribute name becomes the command filename, and the value is either:
-        - Inline content as a string
-        - A path to a file containing the command content
-        Commands are stored in {file}`$XDG_CONFIG_HOME/.config/opencode/command/` directory.
+
+        This option can either be:
+        - An attribute set defining commands
+        - A path to a directory containing multiple command files
+
+        If an attribute set is used, the attribute name becomes the command filename,
+        and the value is either:
+        - Inline content as a string (creates `opencode/commands/<name>.md`)
+        - A path to a file (creates `opencode/commands/<name>.md`)
+
+        If a path is used, it is expected to contain command files.
+        The directory is symlinked to {file}`$XDG_CONFIG_HOME/opencode/commands/`.
       '';
       example = lib.literalExpression ''
         {
@@ -155,14 +266,22 @@ in
     };
 
     agents = lib.mkOption {
-      type = lib.types.attrsOf (lib.types.either lib.types.lines lib.types.path);
+      type = lib.types.either (lib.types.attrsOf (lib.types.either lib.types.lines lib.types.path)) lib.types.path;
       default = { };
       description = ''
         Custom agents for opencode.
-        The attribute name becomes the agent filename, and the value is either:
-        - Inline content as a string
-        - A path to a file containing the agent content
-        Agents are stored in {file}`$XDG_CONFIG_HOME/.config/opencode/agent/` directory.
+
+        This option can either be:
+        - An attribute set defining agents
+        - A path to a directory containing multiple agent files
+
+        If an attribute set is used, the attribute name becomes the agent filename,
+        and the value is either:
+        - Inline content as a string (creates `opencode/agents/<name>.md`)
+        - A path to a file (creates `opencode/agents/<name>.md`)
+
+        If a path is used, it is expected to contain agent files.
+        The directory is symlinked to {file}`$XDG_CONFIG_HOME/opencode/agents/`.
       '';
       example = lib.literalExpression ''
         {
@@ -183,26 +302,181 @@ in
       '';
     };
 
-    themes = mkOption {
-      type = lib.types.attrsOf (lib.types.either jsonFormat.type lib.types.path);
+    skills = lib.mkOption {
+      type = lib.types.either (lib.types.attrsOf (
+        lib.types.oneOf [
+          lib.types.lines
+          lib.types.path
+          lib.types.str
+        ]
+      )) lib.types.path;
       default = { };
       description = ''
-        Custom themes for opencode. The attribute name becomes the theme
-        filename, and the value is either:
-        - An attribute set, that is converted to a json
-        - A path to a file containing the content
-        Themes are stored in {file}`$XDG_CONFIG_HOME/opencode/themes/` directory.
-        Set `programs.opencode.settings.theme` to enable the custom theme.
+        Custom skills for OpenCode.
+
+        This option can be either:
+        - An attribute set defining skills
+        - A path to a directory containing skill folders
+
+        If an attribute set is used, the attribute name becomes the
+        skill directory name, and the value is either:
+        - Inline content as a string (creates `opencode/skills/<name>/SKILL.md`)
+        - A path to a file (creates `opencode/skills/<name>/SKILL.md`)
+        - A path to a directory (creates `opencode/skills/<name>/` with all files)
+
+        This also accepts Nix store paths, for example a skill directory
+        from a package.
+
+        If a path is used, it is expected to contain one folder per
+        skill name, each containing a {file}`SKILL.md`. The directory is
+        symlinked to {file}`$XDG_CONFIG_HOME/opencode/skills/`.
+
+        See <https://opencode.ai/docs/skills/> for the documentation.
+      '';
+      example = lib.literalExpression ''
+        {
+          git-release = '''
+            ---
+            name: git-release
+            description: Create consistent releases and changelogs
+            ---
+
+            ## What I do
+
+            - Draft release notes from merged PRs
+            - Propose a version bump
+            - Provide a copy-pasteable `gh release create` command
+          ''';
+
+          # A skill can also be a directory containing SKILL.md and other files.
+          data-analysis = ./skills/data-analysis;
+
+          # A skill can also be a subdirectory within a package source (store path)
+          beads = "''${pkgs.beads.src}/claude-plugin/skills/beads";
+        }
+      '';
+    };
+
+    themes = mkOption {
+      type = lib.types.either (lib.types.attrsOf (lib.types.either jsonFormat.type lib.types.path)) lib.types.path;
+      default = { };
+      description = ''
+        Custom themes for opencode.
+
+        This option can either be:
+        - An attribute set defining themes
+        - A path to a directory containing multiple theme files
+
+        If an attribute set is used, the attribute name becomes the theme filename,
+        and the value is either:
+        - An attribute set that is converted to a JSON file (creates `opencode/themes/<name>.json`)
+        - A path to a file (creates `opencode/themes/<name>.json`)
+
+        If a path is used, it is expected to contain theme files.
+        The directory is symlinked to {file}`$XDG_CONFIG_HOME/opencode/themes/`.
+
+        Set `programs.opencode.tui.theme` to enable the custom theme.
         See <https://opencode.ai/docs/themes/> for the documentation.
+      '';
+    };
+
+    tools = lib.mkOption {
+      type = lib.types.either (lib.types.attrsOf (lib.types.either lib.types.lines lib.types.path)) lib.types.path;
+      default = { };
+      description = ''
+        Custom tools for opencode.
+
+        This option can either be:
+        - An attribute set defining tools
+        - A path to a directory containing multiple tool files
+
+        If an attribute set is used, the attribute name becomes the tool filename,
+        and the value is either:
+        - Inline content as a string (creates `opencode/tools/<name>.ts`)
+        - A path to a file (creates `opencode/tools/<name>.ts` or `opencode/tools/<name>.js`)
+
+        If a path is used, it is expected to contain tool files.
+        The directory is symlinked to {file}`$XDG_CONFIG_HOME/opencode/tools/`.
+
+        See <https://opencode.ai/docs/tools/> for the documentation.
+      '';
+      example = lib.literalExpression ''
+        {
+          database-query = '''
+            import { tool } from "@opencode-ai/plugin"
+
+            export default tool({
+              description: "Query the project database",
+              args: {
+                query: tool.schema.string().describe("SQL query to execute"),
+              },
+              async execute(args) {
+                // Your database logic here
+                return `Executed query: ''${args.query}`
+              },
+            })
+          ''';
+
+          # Or reference an existing file
+          api-client = ./tools/api-client.ts;
+        }
       '';
     };
   };
 
   config = mkIf cfg.enable {
-    home.packages = mkIf (cfg.package != null) [ cfg.package ];
+    assertions = [
+      {
+        assertion = !lib.isPath cfg.commands || lib.pathIsDirectory cfg.commands;
+        message = "`programs.opencode.commands` must be a directory when set to a path";
+      }
+      {
+        assertion = !lib.isPath cfg.agents || lib.pathIsDirectory cfg.agents;
+        message = "`programs.opencode.agents` must be a directory when set to a path";
+      }
+      {
+        assertion = !lib.isPath cfg.tools || lib.pathIsDirectory cfg.tools;
+        message = "`programs.opencode.tools` must be a directory when set to a path";
+      }
+      {
+        assertion = !isPathLikeContent cfg.skills || lib.pathIsDirectory cfg.skills;
+        message = "`programs.opencode.skills` must be a directory when set to a path";
+      }
+      {
+        assertion = !lib.isPath cfg.themes || lib.pathIsDirectory cfg.themes;
+        message = "`programs.opencode.themes` must be a directory when set to a path";
+      }
+    ];
+
+    warnings =
+      let
+        deprecatedConfigKeys = lib.filter (
+          k:
+          lib.elem k [
+            "theme"
+            "keybinds"
+            "tui"
+          ]
+        ) (lib.attrNames cfg.settings);
+
+        packageVersion = if cfg.package != null then lib.getVersion cfg.package else null;
+        hasTuiConfig = lib.versionAtLeast packageVersion "1.2.15";
+      in
+      lib.optionals (hasTuiConfig && deprecatedConfigKeys != [ ]) [
+        ''
+          programs.opencode.settings contains deprecated TUI-specific keys: ${lib.concatStringsSep ", " deprecatedConfigKeys}
+
+          These settings should be moved to programs.opencode.tui instead.
+
+          OpenCode v1.2.15+ requires TUI settings in a separate tui.json file.
+          See: https://opencode.ai/docs/config#tui
+        ''
+      ];
+
+    home.packages = mkIf (packageWithExtraPackages != null) [ packageWithExtraPackages ];
 
     xdg.configFile = {
-      "opencode/config.json" = mkIf (cfg.settings != { } || transformedMcpServers != { }) {
+      "opencode/opencode.json" = mkIf (cfg.settings != { } || transformedMcpServers != { }) {
         source =
           let
             # Merge MCP servers: transformed servers + user settings, with user settings taking precedence
@@ -211,7 +485,7 @@ in
             mergedSettings =
               cfg.settings // (lib.optionalAttrs (mergedMcpServers != { }) { mcp = mergedMcpServers; });
           in
-          jsonFormat.generate "config.json" (
+          jsonFormat.generate "opencode.json" (
             {
               "$schema" = "https://opencode.ai/config.json";
             }
@@ -219,44 +493,158 @@ in
           );
       };
 
+      "opencode/tui.json" = mkIf (cfg.tui != { }) {
+        source = jsonFormat.generate "tui.json" (
+          {
+            "$schema" = "https://opencode.ai/tui.json";
+          }
+          // cfg.tui
+        );
+      };
+
       "opencode/AGENTS.md" = (
-        if lib.isPath cfg.rules then
-          { source = cfg.rules; }
+        if lib.isPath cfg.context then
+          { source = cfg.context; }
         else
-          (mkIf (cfg.rules != "") {
-            text = cfg.rules;
+          (mkIf (cfg.context != "") {
+            text = cfg.context;
           })
       );
+
+      "opencode/commands" = mkIf (lib.isPath cfg.commands) {
+        source = cfg.commands;
+        recursive = true;
+      };
+
+      "opencode/agents" = mkIf (lib.isPath cfg.agents) {
+        source = cfg.agents;
+        recursive = true;
+      };
+
+      "opencode/tools" = mkIf (lib.isPath cfg.tools) {
+        source = cfg.tools;
+        recursive = true;
+      };
+
+      "opencode/skills" = mkIf (isPathLikeContent cfg.skills) {
+        source = cfg.skills;
+        recursive = true;
+      };
+
+      "opencode/themes" = mkIf (lib.isPath cfg.themes) {
+        source = cfg.themes;
+        recursive = true;
+      };
     }
+    // lib.optionalAttrs (builtins.isAttrs cfg.commands) (
+      lib.mapAttrs' (
+        name: content:
+        lib.nameValuePair "opencode/commands/${name}.md" (
+          if lib.isPath content then { source = content; } else { text = content; }
+        )
+      ) cfg.commands
+    )
+    // lib.optionalAttrs (builtins.isAttrs cfg.agents) (
+      lib.mapAttrs' (
+        name: content:
+        lib.nameValuePair "opencode/agents/${name}.md" (
+          if lib.isPath content then { source = content; } else { text = content; }
+        )
+      ) cfg.agents
+    )
+    // lib.optionalAttrs (builtins.isAttrs cfg.tools) (
+      lib.mapAttrs' (
+        name: content:
+        lib.nameValuePair "opencode/tools/${name}.ts" (
+          if lib.isPath content then { source = content; } else { text = content; }
+        )
+      ) cfg.tools
+    )
     // lib.mapAttrs' (
       name: content:
-      lib.nameValuePair "opencode/command/${name}.md" (
-        if lib.isPath content then { source = content; } else { text = content; }
-      )
-    ) cfg.commands
-    // lib.mapAttrs' (
-      name: content:
-      lib.nameValuePair "opencode/agent/${name}.md" (
-        if lib.isPath content then { source = content; } else { text = content; }
-      )
-    ) cfg.agents
-    // lib.mapAttrs' (
-      name: content:
-      lib.nameValuePair "opencode/themes/${name}.json" (
-        if lib.isPath content then
-          {
-            source = content;
-          }
-        else
-          {
-            source = jsonFormat.generate "opencode-${name}.json" (
-              {
-                "$schema" = "https://opencode.ai/theme.json";
-              }
-              // content
-            );
-          }
-      )
-    ) cfg.themes;
+      if isPathLikeContent content && lib.pathIsDirectory content then
+        lib.nameValuePair "opencode/skills/${name}" {
+          source = content;
+          recursive = true;
+        }
+      else
+        lib.nameValuePair "opencode/skills/${name}/SKILL.md" (
+          if isPathLikeContent content then { source = content; } else { text = content; }
+        )
+    ) (if builtins.isAttrs cfg.skills then cfg.skills else { })
+    // lib.optionalAttrs (builtins.isAttrs cfg.themes) (
+      lib.mapAttrs' (
+        name: content:
+        lib.nameValuePair "opencode/themes/${name}.json" (
+          if lib.isPath content then
+            {
+              source = content;
+            }
+          else
+            {
+              source = jsonFormat.generate "opencode-${name}.json" (
+                {
+                  "$schema" = "https://opencode.ai/theme.json";
+                }
+                // content
+              );
+            }
+        )
+      ) cfg.themes
+    );
+
+    systemd.user.services = mkIf webCfg.enable {
+      opencode-web = {
+        Unit = {
+          Description = "OpenCode Web Service";
+          After = [ "network.target" ];
+        };
+
+        Service = {
+          ExecStart = "${lib.getExe packageWithExtraPackages} serve ${lib.escapeShellArgs webCfg.extraArgs}";
+          Restart = "always";
+          RestartSec = 5;
+        }
+        // lib.optionalAttrs (webCfg.environmentFile != null) {
+          EnvironmentFile = webCfg.environmentFile;
+        };
+
+        Install = {
+          WantedBy = [ "default.target" ];
+        };
+      };
+    };
+
+    launchd.agents = mkIf webCfg.enable {
+      opencode-web = {
+        enable = true;
+        config = {
+          ProgramArguments =
+            let
+              programArguments = [
+                (lib.getExe packageWithExtraPackages)
+                "serve"
+              ]
+              ++ webCfg.extraArgs;
+              opencodeLaunchdWrapper = pkgs.writeShellScriptBin "opencode-launchd-wrapper" ''
+                source ${webCfg.environmentFile}
+                ${lib.escapeShellArgs programArguments}
+              '';
+            in
+            if webCfg.environmentFile == null then
+              programArguments
+            else
+              [
+                (lib.getExe opencodeLaunchdWrapper)
+              ];
+          KeepAlive = {
+            Crashed = true;
+            SuccessfulExit = false;
+          };
+          ProcessType = "Background";
+          RunAtLoad = true;
+        };
+      };
+    };
   };
 }

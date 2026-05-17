@@ -1,6 +1,5 @@
 {
   config,
-  options,
   lib,
   pkgs,
   ...
@@ -42,28 +41,26 @@ let
   };
 
   # Nix-representable format for Mopidy config.
-  mopidyConfFormat =
-    { }:
-    {
-      type =
-        with types;
-        let
-          valueType =
-            nullOr (oneOf [
-              bool
-              float
-              int
-              str
-              (listOf valueType)
-            ])
-            // {
-              description = "Mopidy config value";
-            };
-        in
-        attrsOf (attrsOf valueType);
+  mopidyConfFormat = _: {
+    type =
+      with types;
+      let
+        valueType =
+          nullOr (oneOf [
+            bool
+            float
+            int
+            str
+            (listOf valueType)
+          ])
+          // {
+            description = "Mopidy config value";
+          };
+      in
+      attrsOf (attrsOf valueType);
 
-      generate = name: value: pkgs.writeText name (toMopidyConf value);
-    };
+    generate = name: value: pkgs.writeText name (toMopidyConf value);
+  };
 
   settingsFormat = mopidyConfFormat { };
 
@@ -75,7 +72,7 @@ let
 
 in
 {
-  meta.maintainers = [ lib.maintainers.foo-dogsquared ];
+  meta.maintainers = [ ];
 
   options.services.mopidy = {
     enable = lib.mkEnableOption "Mopidy music player daemon";
@@ -90,7 +87,7 @@ in
     };
 
     settings = mkOption {
-      type = settingsFormat.type;
+      inherit (settingsFormat) type;
       default = { };
       example = lib.literalExpression ''
         {

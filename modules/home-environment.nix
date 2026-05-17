@@ -266,12 +266,15 @@ in
       default = { };
       type =
         with types;
-        lazyAttrsOf (oneOf [
-          str
-          path
-          int
-          float
-        ]);
+        lazyAttrsOf (
+          nullOr (oneOf [
+            str
+            path
+            int
+            float
+            bool
+          ])
+        );
       example = {
         EDITOR = "emacs";
         GS_OPTIONS = "-sPAPERSIZE=a4";
@@ -307,6 +310,9 @@ in
           BAR = "''${config.home.sessionVariables.FOO} World!";
         };
         ```
+
+        Setting a value to `null` will skip setting the variable at all, which
+        may be useful when overriding.
       '';
     };
 
@@ -618,7 +624,7 @@ in
     home.profileDirectory =
       if config.submoduleSupport.enable && config.submoduleSupport.externalPackageInstall then
         "/etc/profiles/per-user/${cfg.username}"
-      else if config.nix.enable && (config.nix.settings.use-xdg-base-directories or false) then
+      else if config.nix.useXdg then
         "${config.xdg.stateHome}/nix/profile"
       else
         cfg.homeDirectory + "/.nix-profile";
@@ -651,7 +657,7 @@ in
       destination = "/etc/profile.d/hm-session-vars.sh";
       text = ''
         # Only source this once.
-        if [ -n "$__HM_SESS_VARS_SOURCED" ]; then return; fi
+        if [ -n "''${__HM_SESS_VARS_SOURCED-}" ]; then return; fi
         export __HM_SESS_VARS_SOURCED=1
 
         ${config.lib.shell.exportAll cfg.sessionVariables}
@@ -847,10 +853,10 @@ in
           ${builtins.readFile ./lib-bash/activation-init.sh}
 
           if [[ ! -v SKIP_SANITY_CHECKS ]]; then
-            checkUsername ${lib.escapeShellArg config.home.username}
-            checkHomeDirectory ${lib.escapeShellArg config.home.homeDirectory}
+            checkStringEq USER "$USER" ${lib.escapeShellArg config.home.username}
+            checkPathEq HOME "$HOME" ${lib.escapeShellArg config.home.homeDirectory}
             ${lib.optionalString (config.home.uid != null) ''
-              checkUid ${toString config.home.uid}
+              checkStringEq UID "$(id -u)" ${toString config.home.uid}
             ''}
           fi
 

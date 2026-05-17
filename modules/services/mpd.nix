@@ -22,6 +22,15 @@ in
 
       package = lib.mkPackageOption pkgs "mpd" { };
 
+      enableSessionVariables = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Whether to set {env}`MPD_HOST` {env}`MPD_PORT` environment variables
+          according to {option}`services.mpd.network`.
+        '';
+      };
+
       musicDirectory = mkOption {
         type = with types; either path str;
         defaultText = lib.literalExpression ''
@@ -112,6 +121,17 @@ in
 
       };
 
+      generatedConfig = mkOption {
+        type = types.str;
+        readOnly = true;
+        description = ''
+          The generated config.
+          Can be used by user as:
+
+            configFile."mpd/mpd.conf".text = config.services.mpd.generatedConfig;
+        '';
+      };
+
       dbFile = mkOption {
         type = types.nullOr types.str;
         default = "${cfg.dataDir}/tag_cache";
@@ -127,35 +147,44 @@ in
 
   config =
     let
-      mpdConf = pkgs.writeText "mpd.conf" (
-        ''
-          music_directory     "${cfg.musicDirectory}"
-          playlist_directory  "${cfg.playlistDirectory}"
-        ''
-        + lib.optionalString (cfg.dbFile != null) ''
-          db_file             "${cfg.dbFile}"
-        ''
-        + lib.optionalString (pkgs.stdenv.hostPlatform.isDarwin) ''
-          log_file            "${config.home.homeDirectory}/Library/Logs/mpd/log.txt"
-        ''
-        + ''
-          state_file          "${cfg.dataDir}/state"
-          sticker_file        "${cfg.dataDir}/sticker.sql"
+      generatedConfig = ''
+        music_directory     "${cfg.musicDirectory}"
+        playlist_directory  "${cfg.playlistDirectory}"
+      ''
+      + lib.optionalString (cfg.dbFile != null) ''
+        db_file             "${cfg.dbFile}"
+      ''
+      + lib.optionalString (pkgs.stdenv.hostPlatform.isDarwin) ''
+        log_file            "${config.home.homeDirectory}/Library/Logs/mpd/log.txt"
+      ''
+      + ''
+        state_file          "${cfg.dataDir}/state"
+        sticker_file        "${cfg.dataDir}/sticker.sql"
 
-        ''
-        + lib.optionalString (cfg.network.listenAddress != "any") ''
-          bind_to_address     "${cfg.network.listenAddress}"
-        ''
-        + lib.optionalString (cfg.network.port != 6600) ''
-          port                "${toString cfg.network.port}"
-        ''
-        + lib.optionalString (cfg.extraConfig != "") ''
-          ${cfg.extraConfig}
-        ''
-      );
+      ''
+      + lib.optionalString (cfg.network.listenAddress != "any") ''
+        bind_to_address     "${cfg.network.listenAddress}"
+      ''
+      + lib.optionalString (cfg.network.port != 6600) ''
+        port                "${toString cfg.network.port}"
+      ''
+      + lib.optionalString (cfg.extraConfig != "") ''
+        ${cfg.extraConfig}
+      '';
+      mpdConf = pkgs.writeText "mpd.conf" generatedConfig;
     in
     mkIf cfg.enable {
-      home.packages = [ cfg.package ];
+      home = {
+        packages = [ cfg.package ];
+        sessionVariables = mkIf cfg.enableSessionVariables (
+          {
+            MPD_PORT = toString cfg.network.port;
+          }
+          // lib.optionalAttrs (cfg.network.listenAddress != "any") {
+            MPD_HOST = cfg.network.listenAddress;
+          }
+        );
+      };
 
       services.mpd = lib.mkMerge [
         (mkIf (lib.versionAtLeast config.home.stateVersion "22.11" && config.xdg.userDirs.enable) {
@@ -165,9 +194,11 @@ in
         (mkIf (lib.versionOlder config.home.stateVersion "22.11") {
           musicDirectory = lib.mkOptionDefault "${config.home.homeDirectory}/music";
         })
+
+        { inherit generatedConfig; }
       ];
 
-      systemd.user = lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
+      systemd.user = {
         services.mpd = {
           Unit = lib.mkMerge [
             {
@@ -221,7 +252,7 @@ in
         };
       };
 
-      launchd.agents.mpd = lib.mkIf pkgs.stdenv.hostPlatform.isDarwin {
+      launchd.agents.mpd = {
         enable = true;
         config = {
           ProgramArguments = [

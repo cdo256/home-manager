@@ -46,7 +46,7 @@ let
         traceXIfNot = c: if c x then true else lib.traceSeqN 1 x false;
       in
       traceXIfNot isConfig;
-    merge = args: lib.foldr (def: mergeConfig def.value) { };
+    merge = _args: lib.foldr (def: mergeConfig def.value) { };
   };
 
   # Copied from nixpkgs.nix.
@@ -59,7 +59,7 @@ let
 
 in
 {
-  meta.maintainers = with lib.maintainers; [ thiagokokada ];
+  meta.maintainers = [ ];
 
   options.nixpkgs = {
     config = lib.mkOption {

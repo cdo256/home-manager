@@ -98,7 +98,7 @@ in
       activateJoplinDesktopConfig =
         let
           newConfig = jsonFormat.generate "joplin-settings.json" (
-            lib.attrsets.filterAttrs (n: v: (v != null) && (v != "")) (
+            lib.attrsets.filterAttrs (_n: v: (v != null) && (v != "")) (
               {
                 # TODO: find a better way to convert nix attribute names to strings:
                 # sync.interval = ... -> "sync.interval" = ...
@@ -139,7 +139,7 @@ in
         in
         lib.hm.dag.entryAfter [ "linkGeneration" ] ''
           # Ensure that settings.json exists.
-          mkdir -p ${builtins.dirOf configPath}
+          mkdir -p ${dirOf configPath}
           touch ${configPath}
           # Config has to be written to temporary variable because jq cannot edit files in place.
           config="$(jq -s '.[0] + .[1]' ${configPath} ${newConfig})"

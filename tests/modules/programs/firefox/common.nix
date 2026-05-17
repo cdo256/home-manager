@@ -1,11 +1,22 @@
-name:
+{ lib, name }:
+let
+  withDefaultStateVersion = module: {
+    imports = [ module ];
+
+    # Stronger than the global test default, but weaker than any test-local
+    # stateVersion assignment.
+    home.stateVersion = lib.mkOverride 900 "26.05";
+  };
+in
 builtins.mapAttrs
   (
-    test: module:
-    import module [
-      "programs"
-      name
-    ]
+    _test: module:
+    withDefaultStateVersion (
+      import module [
+        "programs"
+        name
+      ]
+    )
   )
   {
     "${name}-deprecated-native-messenger" = ./deprecated-native-messenger.nix;
@@ -17,11 +28,14 @@ builtins.mapAttrs
     "${name}-profiles-containers" = ./profiles/containers;
     "${name}-profiles-containers-duplicate-ids" = ./profiles/containers/duplicate-ids.nix;
     "${name}-profiles-containers-id-out-of-range" = ./profiles/containers/id-out-of-range.nix;
+    "${name}-profiles-containers-id-zero" = ./profiles/containers/id-zero.nix;
     "${name}-profiles-duplicate-ids" = ./profiles/duplicate-ids.nix;
     "${name}-profiles-extensions" = ./profiles/extensions;
     "${name}-profiles-extensions-assertions" = ./profiles/extensions/assertions.nix;
+    "${name}-profiles-extensions-extensible" = ./profiles/extensions/extensible.nix;
     "${name}-profiles-extensions-exhaustive" = ./profiles/extensions/exhaustive.nix;
     "${name}-profiles-extensions-exact" = ./profiles/extensions/exact.nix;
+    "${name}-profiles-handlers" = ./profiles/handlers;
     "${name}-profiles-overwrite" = ./profiles/overwrite;
     "${name}-profiles-search" = ./profiles/search;
     "${name}-profiles-settings" = ./profiles/settings;

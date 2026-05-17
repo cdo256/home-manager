@@ -4,7 +4,9 @@
   fish-functions = ./functions.nix;
   fish-completions = ./completions.nix;
   fish-no-functions = ./no-functions.nix;
+  fish-source-handlers = ./source-handlers.nix;
   fish-plugins = ./plugins.nix;
   fish-manpage = ./manpage.nix;
   fish-binds = ./binds.nix;
+  fish-session-variables = ./session-variables.nix;
 }

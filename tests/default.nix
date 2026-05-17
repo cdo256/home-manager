@@ -47,7 +47,7 @@ let
   # Globally unscrub a few selected packages that are used by a wide selection of tests.
   whitelist =
     let
-      inner = self: super: {
+      inner = _self: _super: {
         inherit (pkgs)
           coreutils
           crudini
@@ -64,9 +64,8 @@ let
           # Needed by pretty much all tests that have anything to do with fish.
           babelfish
           fish
+          lndir
           ;
-
-        xorg = super.xorg.overrideScope (self: super: { inherit (pkgs.xorg) lndir; });
       };
 
       outer =
@@ -85,12 +84,12 @@ let
     # TODO: fix darwin stdenv stubbing
     if isDarwin then
       let
-        rawPkgs = lib.makeExtensible (final: pkgs);
+        rawPkgs = lib.makeExtensible (_final: pkgs);
       in
       builtins.traceVerbose "eval scrubbed darwin nixpkgs" (rawPkgs.extend darwinScrublist)
     else
       let
-        rawScrubbedPkgs = lib.makeExtensible (final: scrubDerivations pkgs);
+        rawScrubbedPkgs = lib.makeExtensible (_final: scrubDerivations pkgs);
       in
       builtins.traceVerbose "eval scrubbed nixpkgs" (rawScrubbedPkgs.extend whitelist);
 
@@ -116,7 +115,7 @@ let
                   if overlays == [ ] then
                     scrubbedPkgs
                   else
-                    builtins.traceVerbose "eval overlayed nixpkgs" (lib.foldr (o: p: p.extend o) scrubbedPkgs overlays);
+                    builtins.traceVerbose "eval overlaid nixpkgs" (lib.foldr (o: p: p.extend o) scrubbedPkgs overlays);
               in
               lib.mkImageMediaOverride stubbedPkgs;
           };
@@ -129,6 +128,13 @@ let
             homeDirectory = "/home/hm-user";
             stateVersion = lib.mkDefault "18.09";
           };
+
+          # NOTE: Added 2025-12-27
+          # Avoid option change deprecation warning
+          # Remove after deprecation period
+          programs.zsh.dotDir = lib.mkIf (config.home.stateVersion == "18.09") (
+            lib.mkDefault "/home/hm-user"
+          );
 
           # Avoid including documentation since this will cause
           # unnecessary rebuilds of the tests.
@@ -146,8 +152,8 @@ let
       )
     ];
 
-  isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
-  isLinux = pkgs.stdenv.hostPlatform.isLinux;
+  inherit (pkgs.stdenv.hostPlatform) isDarwin;
+  inherit (pkgs.stdenv.hostPlatform) isLinux;
 in
 import nmtSrc {
   inherit lib pkgs modules;
@@ -181,6 +187,7 @@ import nmtSrc {
           ./modules/misc/nix
           ./modules/misc/nix-remote-build
           ./modules/misc/specialisation
+          ./modules/misc/ssh-auth-sock/default.nix
           ./modules/misc/xdg
           ./modules/xresources
           # keep-sorted end
@@ -205,6 +212,7 @@ import nmtSrc {
           ./modules/misc/qt
           ./modules/misc/xdg/linux.nix
           ./modules/misc/xsession
+          ./modules/services-modular
           ./modules/systemd
           ./modules/targets-linux
           # keep-sorted end

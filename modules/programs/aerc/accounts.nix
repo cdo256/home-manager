@@ -145,7 +145,7 @@ in
   };
 
   mkAccount =
-    name: account:
+    _name: account:
     let
       nullOrMap = f: v: if v == null then v else f v;
 
@@ -168,13 +168,18 @@ in
           "?"
           + builtins.concatStringsSep "&" (
             lib.attrsets.mapAttrsToList (k: v: k + "=" + lib.strings.escapeURL v) (
-              lib.attrsets.filterAttrs (k: v: v != null) params
+              lib.attrsets.filterAttrs (_k: v: v != null) params
             )
           )
         else
           "";
 
       mkConfig = {
+        notmuch = cfg: {
+          source = "notmuch://${config.accounts.email.maildirBasePath}";
+          maildir-store = "${config.accounts.email.maildirBasePath}";
+          maildir-account-path = "${cfg.maildir.path}";
+        };
         maildir = cfg: {
           source = "maildir://${config.accounts.email.maildirBasePath}/${cfg.maildir.path}";
         };
@@ -188,7 +193,6 @@ in
             userName,
             imap,
             passwordCommand,
-            aerc,
             ...
           }@cfg:
           let
@@ -205,11 +209,12 @@ in
               else
                 "imap+insecure";
 
+            userName' = lib.strings.escapeURL userName;
             port' = optPort imap.port;
 
           in
           {
-            source = "${protocol}://${userName}@${imap.host}${port'}${oauthParams'}";
+            source = "${protocol}://${userName'}@${imap.host}${port'}${oauthParams'}";
           }
           // optPwCmd "source" passwordCommand;
 
@@ -234,15 +239,16 @@ in
               else
                 "smtp+insecure${loginMethod'}";
 
+            userName' = lib.strings.escapeURL userName;
             port' = optPort smtp.port;
 
           in
           {
-            outgoing = "${protocol}://${userName}@${smtp.host}${port'}${oauthParams'}";
+            outgoing = "${protocol}://${userName'}@${smtp.host}${port'}${oauthParams'}";
           }
           // optPwCmd "outgoing" passwordCommand;
 
-        msmtp = cfg: {
+        msmtp = _cfg: {
           outgoing = "msmtpq --read-envelope-from --read-recipients";
         };
 
@@ -260,7 +266,9 @@ in
 
       sourceCfg =
         account:
-        if
+        if account.notmuch.enable then
+          mkConfig.notmuch account
+        else if
           account.mbsync.enable && account.mbsync.flatten == null && account.mbsync.subFolders == "Maildir++"
         then
           mkConfig.maildirpp account

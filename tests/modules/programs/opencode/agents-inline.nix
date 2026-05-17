@@ -12,7 +12,8 @@
         - Review for potential bugs and edge cases
         - Check for security vulnerabilities
         - Ensure code follows best practices
-        - Suggest improvements for readability and performance'';
+        - Suggest improvements for readability and performance
+      '';
       documentation = ''
         # Documentation Agent
 
@@ -23,15 +24,16 @@
         - Write clear, concise documentation
         - Include practical examples
         - Use proper formatting and structure
-        - Consider the target audience'';
+        - Consider the target audience
+      '';
     };
   };
   nmt.script = ''
-    assertFileExists home-files/.config/opencode/agent/code-reviewer.md
-    assertFileExists home-files/.config/opencode/agent/documentation.md
-    assertFileContent home-files/.config/opencode/agent/code-reviewer.md \
+    assertFileExists home-files/.config/opencode/agents/code-reviewer.md
+    assertFileExists home-files/.config/opencode/agents/documentation.md
+    assertFileContent home-files/.config/opencode/agents/code-reviewer.md \
       ${./code-reviewer-agent.md}
-    assertFileContent home-files/.config/opencode/agent/documentation.md \
+    assertFileContent home-files/.config/opencode/agents/documentation.md \
       ${./documentation-agent.md}
   '';
 }

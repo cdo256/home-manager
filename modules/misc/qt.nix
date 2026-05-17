@@ -92,7 +92,6 @@ in
 {
   meta.maintainers = with lib.maintainers; [
     rycee
-    thiagokokada
   ];
 
   imports = [
@@ -302,7 +301,7 @@ in
               Appearance = {
                 style = "kvantum";
                 icon_theme = "Papirus-Dark";
-                standar_dialogs = "xdgdesktopportal";
+                standard_dialogs = "xdgdesktopportal";
               };
               Fonts = {
                 fixed = "\"DejaVuSansM Nerd Font Mono,12\"";
@@ -350,11 +349,11 @@ in
           {
             option = "qt.platformTheme.name";
             name = deprecateKde6 cfg.platformTheme.name "qt.platformTheme.name";
-            package = cfg.platformTheme.package;
+            inherit (cfg.platformTheme) package;
           };
 
       # Necessary because home.sessionVariables doesn't support mkIf
-      envVars = lib.filterAttrs (n: v: v != null) {
+      envVars = lib.filterAttrs (_n: v: v != null) {
         QT_QPA_PLATFORMTHEME =
           if (platformTheme.name != null) then
             styleNames.${platformTheme.name} or platformTheme.name

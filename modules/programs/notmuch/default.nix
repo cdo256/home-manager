@@ -41,8 +41,7 @@ let
     };
 
     new = {
-      ignore = cfg.new.ignore;
-      tags = cfg.new.tags;
+      inherit (cfg.new) ignore tags;
     };
 
     user =
@@ -71,6 +70,8 @@ in
   options = {
     programs.notmuch = {
       enable = lib.mkEnableOption "Notmuch mail indexer";
+
+      package = lib.mkPackageOption pkgs "notmuch" { };
 
       new = mkOption {
         type = types.submodule {
@@ -197,7 +198,7 @@ in
       }
     ];
 
-    home.packages = [ pkgs.notmuch ];
+    home.packages = [ cfg.package ];
 
     home.sessionVariables = {
       NOTMUCH_CONFIG = "${config.xdg.configHome}/notmuch/default/config";
@@ -208,7 +209,7 @@ in
       let
         hook = name: cmds: {
           "notmuch/default/hooks/${name}".source = pkgs.writeShellScript name ''
-            export PATH="${pkgs.notmuch}/bin''${PATH:+:}$PATH"
+            export PATH="${cfg.package}/bin''${PATH:+:}$PATH"
             export NOTMUCH_CONFIG="${config.xdg.configHome}/notmuch/default/config"
             export NMBGIT="${config.xdg.dataHome}/notmuch/nmbug"
 

@@ -25,6 +25,10 @@ let
     else
       "\${XDG_STATE_HOME:-$HOME/.local/state}/syncthing";
 
+  defaultGuiAddress = "127.0.0.1:8384";
+
+  hasCustomGuiAddress = cfg.guiAddress != defaultGuiAddress;
+
   # Syncthing supports serving the GUI over Unix sockets. If that happens, the
   # API is served over the Unix socket as well.  This function returns the correct
   # curl arguments for the address portion of the curl command for both network
@@ -38,7 +42,7 @@ let
     # required.
     then
       "--unix-socket ${cfg.guiAddress} http://.${path}"
-    # no adjustements are needed if cfg.guiAddress is a network address
+    # no adjustments are needed if cfg.guiAddress is a network address
     else
       "${cfg.guiAddress}${path}";
 
@@ -68,6 +72,7 @@ let
   install = lib.getExe' pkgs.coreutils "install";
   mktemp = lib.getExe' pkgs.coreutils "mktemp";
   syncthing = lib.getExe cfg.package;
+  mkpasswd = lib.getExe pkgs.mkpasswd;
 
   copyKeys = pkgs.writers.writeBash "syncthing-copy-keys" ''
     ${install} -dm700 "${syncthing_dir}"
@@ -108,6 +113,27 @@ let
 
       ${curlShellFunction}
     ''
+    + lib.optionalString (cfg.guiCredentials != null) ''
+      ${lib.toShellVars { inherit (cfg.guiCredentials) username passwordFile; }}
+      password="$(<"$passwordFile")"
+
+      credential_eval="$(curl -X GET ${curlAddressArgs "/rest/config/gui"} | ${jq} -r '@sh "current_username=\(.user) current_password=\(.password)"')"
+      eval "$credential_eval"
+
+      if [[ "$current_username" != "$username" ]]; then
+          ${jq} -n --arg username "$username" '{user: $username}' | curl --json @- -X PATCH ${curlAddressArgs "/rest/config/gui"}
+      fi
+
+      # The REST API will return the password hashed in bcrypt format.  The
+      # user might have provided a hashed password, or might have provided a
+      # cleartext one.  Only change the password if the password from the
+      # user's configuration neither matches the hashed password from the API,
+      # nor hashes to that password.
+      if [[ -z "$current_password" ]] || { [[ "$current_password" != "$password" ]] && ! printf '%s' "$password" | ${mkpasswd} --stdin --salt "$current_password" &>/dev/null; }; then
+          ${jq} -n --arg password "$password" '{password: $password}' | curl --json @- -X PATCH ${curlAddressArgs "/rest/config/gui"}
+      fi
+
+    ''
     +
 
       /*
@@ -115,137 +141,138 @@ let
         Hence we iterate them using lib.pipe and generate shell commands for both at
         the same time.
       */
-      (lib.pipe
-        {
-          # The attributes below are the only ones that are different for devices /
-          # folders.
-          devs = {
-            new_conf_IDs = map (v: v.id) devices;
-            GET_IdAttrName = "deviceID";
-            override = cfg.overrideDevices;
-            conf = devices;
-            baseAddress = curlAddressArgs "/rest/config/devices";
-          };
-          dirs = {
-            new_conf_IDs = map (v: v.id) folders;
-            GET_IdAttrName = "id";
-            override = cfg.overrideFolders;
-            conf = folders;
-            baseAddress = curlAddressArgs "/rest/config/folders";
-          };
-        }
-        [
-          # Now for each of these attributes, write the curl commands that are
-          # identical to both folders and devices.
-          (lib.mapAttrs (
-            conf_type: s:
-            # We iterate the `conf` list now, and run a curl -X POST command for each, that
-            # should update that device/folder only.
-            lib.pipe s.conf [
-              # Quoting https://docs.syncthing.net/rest/config.html:
-              #
-              # > PUT takes an array and POST a single object. In both cases if a
-              # given folder/device already exists, it’s replaced, otherwise a new
-              # one is added.
-              #
-              # What's not documented, is that using PUT will remove objects that
-              # don't exist in the array given. That's why we use here `POST`, and
-              # only if s.override == true then we DELETE the relevant folders
-              # afterwards.
-              (map (
-                new_cfg:
-                let
-                  jsonPreSecretsFile = pkgs.writeTextFile {
-                    name = "${conf_type}-${new_cfg.id}-conf-pre-secrets.json";
-                    text = builtins.toJSON new_cfg;
-                  };
-                  injectSecretsJqCmd =
-                    {
-                      # There are no secrets in `devs`, so no massaging needed.
-                      "devs" = "${jq} .";
-                      "dirs" =
-                        let
-                          folder = new_cfg;
-                          devicesWithSecrets = lib.pipe folder.devices [
-                            (lib.filter (device: (builtins.isAttrs device) && device ? encryptionPasswordFile))
-                            (map (device: {
-                              deviceId = device.deviceId;
-                              variableName = "secret_${builtins.hashString "sha256" device.encryptionPasswordFile}";
-                              secretPath = device.encryptionPasswordFile;
-                            }))
-                          ];
-                          # At this point, `jsonPreSecretsFile` looks something like this:
-                          #
-                          #   {
-                          #     ...,
-                          #     "devices": [
-                          #       {
-                          #         "deviceId": "id1",
-                          #         "encryptionPasswordFile": "/etc/bar-encryption-password",
-                          #         "name": "..."
-                          #       }
-                          #     ],
-                          #   }
-                          #
-                          # We now generate a `jq` command that can replace those
-                          # `encryptionPasswordFile`s with `encryptionPassword`.
-                          # The `jq` command ends up looking like this:
-                          #
-                          #   jq --rawfile secret_DEADBEEF /etc/bar-encryption-password '
-                          #     .devices[] |= (
-                          #       if .deviceId == "id1" then
-                          #         del(.encryptionPasswordFile) |
-                          #         .encryptionPassword = $secret_DEADBEEF
-                          #       else
-                          #         .
-                          #       end
-                          #     )
-                          #   '
-                          jqUpdates = map (device: ''
-                            .devices[] |= (
-                              if .deviceId == "${device.deviceId}" then
-                                del(.encryptionPasswordFile) |
-                                .encryptionPassword = ''$${device.variableName}
-                              else
-                                .
-                              end
-                            )
-                          '') devicesWithSecrets;
-                          jqRawFiles = map (
-                            device: "--rawfile ${device.variableName} ${lib.escapeShellArg device.secretPath}"
-                          ) devicesWithSecrets;
-                        in
-                        "${jq} ${lib.concatStringsSep " " jqRawFiles} ${
-                          lib.escapeShellArg (lib.concatStringsSep "|" ([ "." ] ++ jqUpdates))
-                        }";
-                    }
-                    .${conf_type};
-                in
-                ''
-                  ${injectSecretsJqCmd} ${jsonPreSecretsFile} | curl --json @- -X POST ${s.baseAddress}
-                ''
-              ))
-              (lib.concatStringsSep "\n")
-            ]
-            /*
-              If we need to override devices/folders, we iterate all currently configured
-              IDs, via another `curl -X GET`, and we delete all IDs that are not part of
-              the Nix configured list of IDs
-            */
-            + lib.optionalString s.override ''
-              stale_${conf_type}_ids="$(curl -X GET ${s.baseAddress} | ${jq} \
-                --argjson new_ids ${lib.escapeShellArg (builtins.toJSON s.new_conf_IDs)} \
-                --raw-output \
-                '[.[].${s.GET_IdAttrName}] - $new_ids | .[]'
-              )"
-              for id in ''${stale_${conf_type}_ids}; do
-                curl -X DELETE ${s.baseAddress}/$id
-              done
-            ''
-          ))
-          builtins.attrValues
-          (lib.concatStringsSep "\n")
-        ]
+      lib.optionalString (cleanedConfig != { }) (
+        lib.pipe
+          {
+            # The attributes below are the only ones that are different for devices /
+            # folders.
+            devs = {
+              new_conf_IDs = map (v: v.id) devices;
+              GET_IdAttrName = "deviceID";
+              override = cfg.overrideDevices;
+              conf = devices;
+              baseAddress = curlAddressArgs "/rest/config/devices";
+            };
+            dirs = {
+              new_conf_IDs = map (v: v.id) folders;
+              GET_IdAttrName = "id";
+              override = cfg.overrideFolders;
+              conf = folders;
+              baseAddress = curlAddressArgs "/rest/config/folders";
+            };
+          }
+          [
+            # Now for each of these attributes, write the curl commands that are
+            # identical to both folders and devices.
+            (lib.mapAttrs (
+              conf_type: s:
+              # We iterate the `conf` list now, and run a curl -X POST command for each, that
+              # should update that device/folder only.
+              lib.pipe s.conf [
+                # Quoting https://docs.syncthing.net/rest/config.html:
+                #
+                # > PUT takes an array and POST a single object. In both cases if a
+                # given folder/device already exists, it’s replaced, otherwise a new
+                # one is added.
+                #
+                # What's not documented, is that using PUT will remove objects that
+                # don't exist in the array given. That's why we use here `POST`, and
+                # only if s.override == true then we DELETE the relevant folders
+                # afterwards.
+                (map (
+                  new_cfg:
+                  let
+                    jsonPreSecretsFile = pkgs.writeTextFile {
+                      name = "${conf_type}-${new_cfg.id}-conf-pre-secrets.json";
+                      text = builtins.toJSON new_cfg;
+                    };
+                    injectSecretsJqCmd =
+                      {
+                        # There are no secrets in `devs`, so no massaging needed.
+                        "devs" = "${jq} .";
+                        "dirs" =
+                          let
+                            folder = new_cfg;
+                            devicesWithSecrets = lib.pipe folder.devices [
+                              (lib.filter (device: (builtins.isAttrs device) && device ? encryptionPasswordFile))
+                              (map (device: {
+                                inherit (device) deviceId;
+                                variableName = "secret_${builtins.hashString "sha256" device.encryptionPasswordFile}";
+                                secretPath = device.encryptionPasswordFile;
+                              }))
+                            ];
+                            # At this point, `jsonPreSecretsFile` looks something like this:
+                            #
+                            #   {
+                            #     ...,
+                            #     "devices": [
+                            #       {
+                            #         "deviceId": "id1",
+                            #         "encryptionPasswordFile": "/etc/bar-encryption-password",
+                            #         "name": "..."
+                            #       }
+                            #     ],
+                            #   }
+                            #
+                            # We now generate a `jq` command that can replace those
+                            # `encryptionPasswordFile`s with `encryptionPassword`.
+                            # The `jq` command ends up looking like this:
+                            #
+                            #   jq --rawfile secret_DEADBEEF /etc/bar-encryption-password '
+                            #     .devices[] |= (
+                            #       if .deviceId == "id1" then
+                            #         del(.encryptionPasswordFile) |
+                            #         .encryptionPassword = $secret_DEADBEEF
+                            #       else
+                            #         .
+                            #       end
+                            #     )
+                            #   '
+                            jqUpdates = map (device: ''
+                              .devices[] |= (
+                                if .deviceId == "${device.deviceId}" then
+                                  del(.encryptionPasswordFile) |
+                                  .encryptionPassword = ''$${device.variableName}
+                                else
+                                  .
+                                end
+                              )
+                            '') devicesWithSecrets;
+                            jqRawFiles = map (
+                              device: "--rawfile ${device.variableName} ${lib.escapeShellArg device.secretPath}"
+                            ) devicesWithSecrets;
+                          in
+                          "${jq} ${lib.concatStringsSep " " jqRawFiles} ${
+                            lib.escapeShellArg (lib.concatStringsSep "|" ([ "." ] ++ jqUpdates))
+                          }";
+                      }
+                      .${conf_type};
+                  in
+                  ''
+                    ${injectSecretsJqCmd} ${jsonPreSecretsFile} | curl --json @- -X POST ${s.baseAddress}
+                  ''
+                ))
+                (lib.concatStringsSep "\n")
+              ]
+              /*
+                If we need to override devices/folders, we iterate all currently configured
+                IDs, via another `curl -X GET`, and we delete all IDs that are not part of
+                the Nix configured list of IDs
+              */
+              + lib.optionalString s.override ''
+                stale_${conf_type}_ids="$(curl -X GET ${s.baseAddress} | ${jq} \
+                  --argjson new_ids ${lib.escapeShellArg (builtins.toJSON s.new_conf_IDs)} \
+                  --raw-output \
+                  '[.[].${s.GET_IdAttrName}] - $new_ids | .[]'
+                )"
+                for id in ''${stale_${conf_type}_ids}; do
+                  curl -X DELETE ${s.baseAddress}/$id
+                done
+              ''
+            ))
+            builtins.attrValues
+            (lib.concatStringsSep "\n")
+          ]
       )
     +
       /*
@@ -265,11 +292,7 @@ let
         ''))
         (lib.concatStringsSep "\n")
       ])
-    + lib.optionalString (cfg.passwordFile != null) ''
-      syncthing_password=$(${cat} ${cfg.passwordFile})
-      curl -X PATCH -d '{"password": "'$syncthing_password'"}' ${curlAddressArgs "/rest/config/gui"}
-    ''
-    + lib.optionalString (cfg.guiAddress != null) ''
+    + lib.optionalString hasCustomGuiAddress ''
       curl -X PATCH -d '{"address": "'${cfg.guiAddress}'"}' ${curlAddressArgs "/rest/config/gui"}
     ''
     + ''
@@ -280,6 +303,8 @@ let
       fi
     ''
   );
+
+  doUpdateConfig = cleanedConfig != { } || cfg.guiCredentials != null || hasCustomGuiAddress;
 
   defaultSyncthingArgs = [
     "${syncthing}"
@@ -295,7 +320,15 @@ in
 {
   meta.maintainers = [
     lib.maintainers.rycee
-    lib.hm.maintainers.aionescu
+    lib.maintainers.aionescu
+  ];
+
+  imports = [
+    (lib.mkRemovedOptionModule [
+      "services"
+      "syncthing"
+      "passwordFile"
+    ] "Instead, configure services.syncthing.guiCredentials.")
   ];
 
   options = {
@@ -322,12 +355,42 @@ in
         '';
       };
 
-      passwordFile = mkOption {
-        type = with types; nullOr path;
+      guiCredentials = mkOption {
         default = null;
         description = ''
-          Path to the gui password file.
+          Credentials to use for access to the Syncthing GUI.  Configuring
+          these is recommended, as otherwise any user with access to the GUI
+          web address -- which would typically include all local accounts on
+          your system -- will effectively have read/write access to the
+          filesystem with your permissions.
         '';
+        type = types.nullOr (
+          types.submodule {
+            options = {
+              username = mkOption {
+                description = "Username to use to log into the Syncthing GUI.";
+                type = types.nonEmptyStr;
+                example = literalExpression "config.home.username";
+              };
+
+              passwordFile = lib.mkOption {
+                description = ''
+                  The full path to a file that contains the password, or a hash of
+                  the password, to set for GUI access.
+
+                  The password file is read each time Syncthing is started.
+
+                  If the password file contains a bcrypt hash, Syncthing will use
+                  that hash as-is.  Otherwise, Syncthing will hash the password
+                  provided before storing it.
+                '';
+                type = lib.types.str;
+                example = literalExpression "config.sops.secrets.syncthing.path";
+                default = null;
+              };
+            };
+          }
+        );
       };
 
       overrideDevices = mkOption {
@@ -712,7 +775,7 @@ in
 
       guiAddress = mkOption {
         type = types.str;
-        default = "127.0.0.1:8384";
+        default = defaultGuiAddress;
         description = ''
           The address to serve the web interface at.
         '';
@@ -774,6 +837,8 @@ in
             Description = "Syncthing - Open Source Continuous File Synchronization";
             Documentation = "man:syncthing(1)";
             After = [ "network.target" ];
+            StartLimitIntervalSec = 60;
+            StartLimitBurst = 4;
           };
 
           Service = {
@@ -788,7 +853,7 @@ in
               3
               4
             ];
-            Environment = lib.mkIf (cfg.allProxy != null) { all_proxy = cfg.allProxy; };
+            Environment = lib.mkIf (cfg.allProxy != null) "all_proxy=${cfg.allProxy}";
 
             # Sandboxing.
             LockPersonality = true;
@@ -805,7 +870,7 @@ in
           };
         };
 
-        syncthing-init = lib.mkIf (cleanedConfig != { }) {
+        syncthing-init = lib.mkIf doUpdateConfig {
           Unit = {
             Description = "Syncthing configuration updater";
             Requires = [ "syncthing.service" ];
@@ -825,40 +890,37 @@ in
         };
       };
 
-      launchd.agents =
-        let
-          # agent `syncthing` uses `${syncthing_dir}/${watch_file}` to notify agent `syncthing-init`
-          watch_file = ".launchd_update_config";
-        in
-        {
-          syncthing = {
-            enable = true;
-            config = {
-              ProgramArguments = [
-                "${pkgs.writers.writeBash "syncthing-wrapper" ''
-                  ${copyKeys}                               # simulate systemd's `syncthing-init.Service.ExecStartPre`
-                  touch "${syncthing_dir}/${watch_file}"    # notify syncthing-init agent
-                  exec ${lib.escapeShellArgs syncthingArgs}
-                ''}"
-              ];
-              KeepAlive = {
-                Crashed = true;
-                SuccessfulExit = false;
-              };
-              ProcessType = "Background";
+      launchd.agents = {
+        syncthing = {
+          enable = true;
+          config = {
+            ProgramArguments = [
+              "${pkgs.writers.writeBash "syncthing-wrapper" ''
+                ${copyKeys}    # simulate systemd's `syncthing-init.Service.ExecStartPre`
+                exec ${lib.escapeShellArgs syncthingArgs}
+              ''}"
+            ];
+            KeepAlive = {
+              Crashed = true;
+              SuccessfulExit = false;
             };
-          };
-
-          syncthing-init = {
-            enable = cleanedConfig != { };
-            config = {
-              ProgramArguments = [ "${updateConfig}" ];
-              WatchPaths = [
-                "${config.home.homeDirectory}/Library/Application Support/Syncthing/${watch_file}"
-              ];
-            };
+            ProcessType = "Background";
+            StandardOutPath = "${config.home.homeDirectory}/Library/Logs/Syncthing/syncthing-stdout.log";
+            StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/Syncthing/syncthing-stderr.log";
           };
         };
+
+        syncthing-init = {
+          enable = doUpdateConfig;
+          config = {
+            ProgramArguments = [ "${updateConfig}" ];
+            ProcessType = "Background";
+            RunAtLoad = true;
+            StandardOutPath = "${config.home.homeDirectory}/Library/Logs/Syncthing/syncthing-init-stdout.log";
+            StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/Syncthing/syncthing-init-stderr.log";
+          };
+        };
+      };
     })
 
     (lib.mkIf cfg.tray.enable {

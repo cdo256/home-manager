@@ -22,7 +22,6 @@
     enable = true;
     enableMcpIntegration = true;
     settings = {
-      theme = "opencode";
       model = "anthropic/claude-sonnet-4-20250514";
       # User's custom MCP settings should override generated ones
       mcp = {
@@ -41,8 +40,8 @@
   };
 
   nmt.script = ''
-    assertFileExists home-files/.config/opencode/config.json
-    assertFileContent home-files/.config/opencode/config.json \
+    assertFileExists home-files/.config/opencode/opencode.json
+    assertFileContent home-files/.config/opencode/opencode.json \
       ${./mcp-integration-with-override.json}
   '';
 }

@@ -24,7 +24,7 @@ in
     package = lib.mkPackageOption pkgs "hyprpanel" { };
 
     settings = lib.mkOption {
-      type = jsonFormat.type;
+      inherit (jsonFormat) type;
       default = { };
       example = lib.literalExpression ''
         bar.battery.label = true;
@@ -70,7 +70,7 @@ in
           "mako"
         ];
       in
-      builtins.map (name: {
+      map (name: {
         assertion = !config.services.${name}.enable;
         message = ''
           Only one notification daemon can be enabled at once. You have enabled

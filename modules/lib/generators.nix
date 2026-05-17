@@ -21,6 +21,7 @@
         isList
         mapAttrsToList
         replicate
+        attrNames
         ;
 
       initialIndent = concatStrings (replicate indentLevel "  ");
@@ -28,31 +29,36 @@
       toHyprconf' =
         indent: attrs:
         let
-          sections = filterAttrs (n: v: isAttrs v || (isList v && all isAttrs v)) attrs;
+          isImportantField =
+            n: _: foldl (acc: prev: if hasPrefix prev n then true else acc) false importantPrefixes;
+          importantFields = filterAttrs isImportantField attrs;
+          withoutImportantFields = fields: removeAttrs fields (attrNames importantFields);
+
+          allSections = filterAttrs (_n: v: isAttrs v || isList v) attrs;
+          sections = withoutImportantFields allSections;
 
           mkSection =
             n: attrs:
-            if lib.isList attrs then
-              (concatMapStringsSep "\n" (a: mkSection n a) attrs)
-            else
+            if isList attrs then
+              let
+                separator = if all isAttrs attrs then "\n" else "";
+              in
+              (concatMapStringsSep separator (a: mkSection n a) attrs)
+            else if isAttrs attrs then
               ''
                 ${indent}${n} {
                 ${toHyprconf' "  ${indent}" attrs}${indent}}
-              '';
+              ''
+            else
+              toHyprconf' indent { ${n} = attrs; };
 
           mkFields = generators.toKeyValue {
             listsAsDuplicateKeys = true;
             inherit indent;
           };
 
-          allFields = filterAttrs (n: v: !(isAttrs v || (isList v && all isAttrs v))) attrs;
-
-          isImportantField =
-            n: _: foldl (acc: prev: if hasPrefix prev n then true else acc) false importantPrefixes;
-
-          importantFields = filterAttrs isImportantField allFields;
-
-          fields = builtins.removeAttrs allFields (mapAttrsToList (n: _: n) importantFields);
+          allFields = filterAttrs (_n: v: !(isAttrs v || isList v)) attrs;
+          fields = withoutImportantFields allFields;
         in
         mkFields importantFields
         + concatStringsSep "\n" (mapAttrsToList mkSection sections)
@@ -61,7 +67,7 @@
     toHyprconf' initialIndent attrs;
 
   toKDL =
-    { }:
+    _:
     let
       inherit (lib)
         concatStringsSep
@@ -197,7 +203,15 @@
         else if vType == "set" then
           convertAttrsToKDL name value
         else if vType == "list" then
-          convertListToKDL name value
+          if name == "_children" then
+            concatStringsSep "\n" (
+              map (lib.flip lib.pipe [
+                (mapAttrsToList convertAttributeToKDL)
+                (concatStringsSep "\n")
+              ]) value
+            )
+          else
+            convertListToKDL name value
         else
           throw ''
             Cannot convert type `(${typeOf value})` to KDL:
@@ -209,7 +223,7 @@
     '';
 
   toSCFG =
-    { }:
+    _:
     let
       inherit (lib) concatStringsSep any;
       inherit (builtins) typeOf replaceStrings elem;

@@ -30,42 +30,40 @@ let
       mapAttrsToList (name: value: ''${name}="${lib.escape [ ''"'' "\\" ] (toString value)}"'') envStr
     );
 
-  bindOptions = {
-    address = mkOption {
-      type = types.str;
-      default = "localhost";
-      example = "example.org";
-      description = "The address where to bind the port.";
-    };
-
-    port = mkOption {
-      type = types.nullOr types.port;
-      default = null;
-      example = 8080;
-      description = "Specifies port number to bind on bind address.";
-    };
-  };
-
-  dynamicForwardModule = types.submodule { options = bindOptions; };
-
-  forwardModule = types.submodule {
-    options = {
-      bind = bindOptions;
-
-      host = {
+  mkAddressPortModule =
+    {
+      actionType,
+      nullableAddress ? actionType == "forward",
+    }:
+    types.submodule {
+      options = {
         address = mkOption {
-          type = types.nullOr types.str;
-          default = null;
+          type = if nullableAddress then types.nullOr types.str else types.str;
+          default = if nullableAddress then null else "localhost";
           example = "example.org";
-          description = "The address where to forward the traffic to.";
+          description = "The address to ${actionType} to.";
         };
 
         port = mkOption {
           type = types.nullOr types.port;
           default = null;
-          example = 80;
-          description = "Specifies port number to forward the traffic to.";
+          example = 8080;
+          description = "Specifies port number to ${actionType} to.";
         };
+      };
+    };
+
+  dynamicForwardModule = mkAddressPortModule { actionType = "bind"; };
+
+  forwardModule = types.submodule {
+    options = {
+      bind = mkOption {
+        type = mkAddressPortModule { actionType = "bind"; };
+        description = "Local port binding options";
+      };
+      host = mkOption {
+        type = mkAddressPortModule { actionType = "forward"; };
+        description = "Host port binding options";
       };
     };
   };
@@ -137,8 +135,8 @@ let
       };
 
       identitiesOnly = mkOption {
-        type = types.bool;
-        default = false;
+        type = types.nullOr types.bool;
+        default = null;
         description = ''
           Specifies that ssh should only use the authentication
           identity explicitly configured in the
@@ -383,6 +381,18 @@ let
         example = "10m";
         description = "Whether control socket should remain open in the background.";
       };
+
+      kexAlgorithms = mkOption {
+        type = types.nullOr (types.listOf types.str);
+        default = null;
+        example = [
+          "curve25519-sha256@libssh.org"
+          "diffie-hellman-group-exchange-sha256"
+        ];
+        description = ''
+          Specifies the available KEX (Key Exchange) algorithms.
+        '';
+      };
     };
 
     #    config.host = mkDefault dagName;
@@ -400,7 +410,9 @@ let
       ++ optional (cf.forwardAgent != null) "  ForwardAgent ${lib.hm.booleans.yesNo cf.forwardAgent}"
       ++ optional cf.forwardX11 "  ForwardX11 yes"
       ++ optional cf.forwardX11Trusted "  ForwardX11Trusted yes"
-      ++ optional cf.identitiesOnly "  IdentitiesOnly yes"
+      ++ optional (
+        cf.identitiesOnly != null
+      ) "  IdentitiesOnly ${lib.hm.booleans.yesNo cf.identitiesOnly}"
       ++ optional (cf.user != null) "  User ${cf.user}"
       ++ optional (cf.hostname != null) "  HostName ${cf.hostname}"
       ++ optional (cf.addressFamily != null) "  AddressFamily ${cf.addressFamily}"
@@ -430,6 +442,9 @@ let
       ++ map (f: "  LocalForward" + addressPort f.bind + addressPort f.host) cf.localForwards
       ++ map (f: "  RemoteForward" + addressPort f.bind + addressPort f.host) cf.remoteForwards
       ++ map (f: "  DynamicForward" + addressPort f) cf.dynamicForwards
+      ++ optional (
+        cf.kexAlgorithms != null
+      ) "  KexAlgorithms ${builtins.concatStringsSep "," cf.kexAlgorithms}"
       ++ [
         (lib.generators.toKeyValue {
           mkKeyValue = lib.generators.mkKeyValueDefault { } " ";
@@ -603,10 +618,7 @@ in
             sortedMatchBlocks = lib.hm.dag.topoSort (lib.removeAttrs cfg.matchBlocks [ "*" ]);
             sortedMatchBlocksStr = builtins.toJSON sortedMatchBlocks;
             matchBlocks =
-              if sortedMatchBlocks ? result then
-                sortedMatchBlocks.result
-              else
-                abort "Dependency cycle in SSH match blocks: ${sortedMatchBlocksStr}";
+              sortedMatchBlocks.result or (abort "Dependency cycle in SSH match blocks: ${sortedMatchBlocksStr}");
 
             defaultHostBlock = cfg.matchBlocks."*" or null;
           in
@@ -625,10 +637,10 @@ in
 
         warnings =
           mapAttrsToList
-            (n: v: ''
+            (n: _v: ''
               The SSH config match block `programs.ssh.matchBlocks.${n}` sets both of the host and match options.
               The match option takes precedence.'')
-            (lib.filterAttrs (n: v: v.data.host != null && v.data.match != null) cfg.matchBlocks);
+            (lib.filterAttrs (_n: v: v.data.host != null && v.data.match != null) cfg.matchBlocks);
       }
       (lib.mkIf cfg.enableDefaultConfig {
         warnings = [

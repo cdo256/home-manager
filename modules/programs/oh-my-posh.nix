@@ -31,7 +31,7 @@ in
     package = lib.mkPackageOption pkgs "oh-my-posh" { };
 
     settings = lib.mkOption {
-      type = jsonFormat.type;
+      inherit (jsonFormat) type;
       default = { };
       example = lib.literalExpression ''builtins.fromJSON (builtins.unsafeDiscardStringContext (builtins.readFile "''${pkgs.oh-my-posh}/share/oh-my-posh/themes/space.omp.json"))'';
       description = ''
@@ -108,11 +108,11 @@ in
           if lib.versionAtLeast (lib.versions.major cfg.package.version) "26" then
             "${lib.getExe cfg.package} init nu ${configArgument}"
           else
-            ''source ${
+            "source ${
               pkgs.runCommand "oh-my-posh-nushell-config.nu" { } ''
                 ${lib.getExe cfg.package} init nu ${configArgument} --print >> "$out"
               ''
-            }''
+            }"
         }
       '';
     };

@@ -23,7 +23,7 @@ let
   extendedLib = import ./lib/stdlib-extended.nix lib;
 
   hmModules = import ./modules.nix {
-    inherit check pkgs;
+    inherit check pkgs minimal;
     lib = extendedLib;
   };
 
@@ -31,7 +31,7 @@ let
     modules = [ configuration ] ++ hmModules;
     class = "homeManager";
     specialArgs = {
-      modulesPath = builtins.toString ./.;
+      modulesPath = toString ./.;
     }
     // extraSpecialArgs;
   };
@@ -57,10 +57,9 @@ let
     let
       module = moduleChecks rawModule;
     in
-    {
-      inherit (module) options config;
-
-      activationPackage = module.config.home.activationPackage;
+    module
+    // {
+      inherit (module.config.home) activationPackage;
 
       # For backwards compatibility. Please use activationPackage instead.
       activation-script = module.config.home.activationPackage;

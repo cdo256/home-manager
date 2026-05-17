@@ -69,6 +69,57 @@ let
 
   hmPath = toString ./..;
 
+  # Keep submodule option docs visible when wrapped in `either` (and therefore
+  # in `nullOr (either ...)`), which upstream currently omits.
+  docsLib = lib.extend (
+    _self: super:
+    let
+      mergeEitherSubOptions =
+        prefix: leftType: rightType:
+        let
+          getSubOptionsOrEmpty =
+            optionType:
+            let
+              subOptions = optionType.getSubOptions prefix;
+            in
+            if builtins.isAttrs subOptions then subOptions else { };
+
+          mkOptionDecl = options: {
+            _file = "<docs/default.nix>";
+            pos = null;
+            inherit options;
+          };
+
+          optionSets = lib.filter (options: options != { }) [
+            (getSubOptionsOrEmpty leftType)
+            (getSubOptionsOrEmpty rightType)
+          ];
+          mergedOptions = lib.foldl' (
+            acc: options:
+            if acc == { } then
+              options
+            else
+              (super.mergeOptionDecls prefix [
+                (mkOptionDecl acc)
+                (mkOptionDecl options)
+              ]).options
+          ) { } optionSets;
+        in
+        mergedOptions;
+
+    in
+    {
+      types = super.types // {
+        either =
+          leftType: rightType:
+          (super.types.either leftType rightType)
+          // {
+            getSubOptions = prefix: mergeEitherSubOptions prefix leftType rightType;
+          };
+      };
+    }
+  );
+
   buildOptionsDocs =
     args@{
       modules,
@@ -102,16 +153,19 @@ let
           config = lib.listToAttrs (map poisonAttr (lib.filter (n: n != "_module") (lib.attrNames options)));
         };
 
-      options =
-        (lib.evalModules {
-          modules = modules ++ [ poisonModule ];
-          class = "homeManager";
-        }).options;
+      inherit
+        (
+          (docsLib.evalModules {
+            modules = modules ++ [ poisonModule ];
+            class = "homeManager";
+          })
+        )
+        options
+        ;
     in
     pkgs.buildPackages.nixosOptionsDoc (
       {
-        options =
-          if includeModuleSystemOptions then options else builtins.removeAttrs options [ "_module" ];
+        options = if includeModuleSystemOptions then options else removeAttrs options [ "_module" ];
         transformOptions =
           opt:
           opt
@@ -133,7 +187,7 @@ let
             ) opt.declarations;
           };
       }
-      // builtins.removeAttrs args [
+      // removeAttrs args [
         "modules"
         "includeModuleSystemOptions"
       ]
@@ -142,7 +196,8 @@ let
   hmOptionsDocs = buildOptionsDocs {
     modules =
       import ../modules/modules.nix {
-        inherit lib pkgs;
+        lib = docsLib;
+        inherit pkgs;
         check = false;
       }
       ++ [ scrubbedPkgsModule ];
@@ -247,4 +302,7 @@ in
     in
     builtins.toJSON result.config.meta.maintainers
   );
+
+  # Unstable, for tests.
+  _internal = { inherit docsLib; };
 }

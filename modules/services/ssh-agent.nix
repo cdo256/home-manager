@@ -13,6 +13,15 @@ in
     lib.hm.maintainers.lheckemann
   ];
 
+  imports =
+    map (shell: lib.mkRemovedOptionModule [ "services" "ssh-agent" "enable${shell}Integration" ] "")
+      [
+        "Bash"
+        "Zsh"
+        "Fish"
+        "Nushell"
+      ];
+
   options.services.ssh-agent = {
     enable = lib.mkEnableOption "OpenSSH private key agent";
 
@@ -37,100 +46,82 @@ in
       '';
     };
 
-    enableBashIntegration = lib.hm.shell.mkBashIntegrationOption { inherit config; };
+    pkcs11Whitelist = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = lib.literalExpression ''[ "''${pkgs.tpm2-pkcs11}/lib/*" ]'';
+      description = ''
+        Specify a list of approved path patterns for PKCS#11 and FIDO authenticator middleware libraries. When using the -s or -S options with {manpage}`ssh-add(1)`, only libraries matching these patterns will be accepted.
 
-    enableZshIntegration = lib.hm.shell.mkZshIntegrationOption { inherit config; };
-
-    enableFishIntegration = lib.hm.shell.mkFishIntegrationOption { inherit config; };
-
-    enableNushellIntegration = lib.hm.shell.mkNushellIntegrationOption { inherit config; };
+        See {manpage}`ssh-agent(1)`.
+      '';
+    };
   };
 
-  config = lib.mkIf cfg.enable (
-    lib.mkMerge [
+  config = lib.mkIf cfg.enable {
+
+    sshAuthSock.initialization =
+      let
+        socketPath =
+          if pkgs.stdenv.isDarwin then
+            "$(${lib.getExe pkgs.getconf} DARWIN_USER_TEMP_DIR)/${cfg.socket}"
+          else
+            "$XDG_RUNTIME_DIR/${cfg.socket}";
+      in
       {
-        programs =
-          let
-            socketPath =
-              if pkgs.stdenv.isDarwin then
-                "$(${lib.getExe pkgs.getconf} DARWIN_USER_TEMP_DIR)/${cfg.socket}"
-              else
-                "$XDG_RUNTIME_DIR/${cfg.socket}";
+        bash = ''export SSH_AUTH_SOCK="${socketPath}"'';
+        fish = ''set -x SSH_AUTH_SOCK "${socketPath}"'';
+        nushell = "$env.SSH_AUTH_SOCK = ${
+          if pkgs.stdenv.isDarwin then
+            ''$"(${lib.getExe pkgs.getconf} DARWIN_USER_TEMP_DIR)/${cfg.socket}"''
+          else
+            ''$"($env.XDG_RUNTIME_DIR)/${cfg.socket}"''
+        }";
+      };
 
-            bashIntegration = ''
-              if [ -z "$SSH_AUTH_SOCK" ]; then
-                export SSH_AUTH_SOCK=${socketPath}
-              fi
-            '';
+    systemd.user.services.ssh-agent = {
+      Install.WantedBy = [ "default.target" ];
+      Unit = {
+        Description = "SSH authentication agent";
+        Documentation = "man:ssh-agent(1)";
+      };
+      Service = {
+        ExecStart = "${lib.getExe' cfg.package "ssh-agent"} -D -a %t/${cfg.socket}${
+          lib.optionalString (
+            cfg.defaultMaximumIdentityLifetime != null
+          ) " -t ${toString cfg.defaultMaximumIdentityLifetime}"
+        }${
+          lib.optionalString (
+            cfg.pkcs11Whitelist != [ ]
+          ) " -P '${lib.concatStringsSep "," cfg.pkcs11Whitelist}'"
+        }";
+        SuccessExitStatus = 2;
+      };
+    };
 
-            fishIntegration = ''
-              if test -z "$SSH_AUTH_SOCK"
-                set -x SSH_AUTH_SOCK ${socketPath}
-              end
-            '';
-
-            nushellIntegration =
-              if pkgs.stdenv.isDarwin then
-                ''
-                  if "SSH_AUTH_SOCK" not-in $env {
-                    $env.SSH_AUTH_SOCK = $"(${lib.getExe pkgs.getconf} DARWIN_USER_TEMP_DIR)/${cfg.socket}"
-                  }
-                ''
-              else
-                ''
-                  if "SSH_AUTH_SOCK" not-in $env {
-                    $env.SSH_AUTH_SOCK = $"($env.XDG_RUNTIME_DIR)/${cfg.socket}"
-                  }
-                '';
-          in
-          {
-            bash.initExtra = lib.mkIf cfg.enableBashIntegration bashIntegration;
-
-            zsh.initContent = lib.mkIf cfg.enableZshIntegration bashIntegration;
-
-            fish.interactiveShellInit = lib.mkIf cfg.enableFishIntegration fishIntegration;
-
-            nushell.extraConfig = lib.mkIf cfg.enableNushellIntegration nushellIntegration;
-          };
-      }
-
-      (lib.mkIf pkgs.stdenv.isLinux {
-        systemd.user.services.ssh-agent = {
-          Install.WantedBy = [ "default.target" ];
-          Unit = {
-            Description = "SSH authentication agent";
-            Documentation = "man:ssh-agent(1)";
-          };
-          Service.ExecStart = "${lib.getExe' cfg.package "ssh-agent"} -D -a %t/${cfg.socket}${
+    launchd.agents.ssh-agent = {
+      enable = true;
+      config = {
+        ProgramArguments = [
+          (lib.getExe pkgs.bash)
+          "-c"
+          ''${lib.getExe' cfg.package "ssh-agent"} -D -a "$(${lib.getExe pkgs.getconf} DARWIN_USER_TEMP_DIR)/${cfg.socket}"${
             lib.optionalString (
               cfg.defaultMaximumIdentityLifetime != null
             ) " -t ${toString cfg.defaultMaximumIdentityLifetime}"
-          }";
+          }${
+            lib.optionalString (
+              cfg.pkcs11Whitelist != [ ]
+            ) " -P '${lib.concatStringsSep "," cfg.pkcs11Whitelist}'"
+          }''
+        ];
+        KeepAlive = {
+          Crashed = true;
+          SuccessfulExit = false;
         };
-      })
-
-      (lib.mkIf pkgs.stdenv.isDarwin {
-        launchd.agents.ssh-agent = {
-          enable = true;
-          config = {
-            ProgramArguments = [
-              (lib.getExe pkgs.bash)
-              "-c"
-              ''${lib.getExe' cfg.package "ssh-agent"} -D -a "$(${lib.getExe pkgs.getconf} DARWIN_USER_TEMP_DIR)/${cfg.socket}"${
-                lib.optionalString (
-                  cfg.defaultMaximumIdentityLifetime != null
-                ) " -t ${toString cfg.defaultMaximumIdentityLifetime}"
-              }''
-            ];
-            KeepAlive = {
-              Crashed = true;
-              SuccessfulExit = false;
-            };
-            ProcessType = "Background";
-            RunAtLoad = true;
-          };
-        };
-      })
-    ]
-  );
+        ProcessType = "Background";
+        RunAtLoad = true;
+      };
+    };
+  };
 }

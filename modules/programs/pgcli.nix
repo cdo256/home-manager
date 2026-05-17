@@ -19,7 +19,7 @@ let
 
 in
 {
-  meta.maintainers = [ lib.hm.maintainers.nickthegroot ];
+  meta.maintainers = [ lib.maintainers.nickthegroot ];
 
   options.programs.pgcli = {
     enable = mkEnableOption "pgcli";
@@ -27,7 +27,7 @@ in
     package = mkPackageOption pkgs "pgcli" { nullable = true; };
 
     settings = mkOption {
-      type = iniFormat.type;
+      inherit (iniFormat) type;
       default = { };
       example = literalExpression ''
         {

@@ -113,7 +113,7 @@ let
 
 in
 {
-  meta.maintainers = [ lib.maintainers.offline ];
+  meta.maintainers = [ ];
 
   options = {
     services.xsuspender = {
@@ -147,7 +147,7 @@ in
       };
 
       iniContent = mkOption {
-        type = iniFormat.type;
+        inherit (iniFormat) type;
         internal = true;
       };
     };

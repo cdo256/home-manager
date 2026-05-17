@@ -9,7 +9,7 @@ let
   iniFormat = pkgs.formats.ini { };
 in
 {
-  meta.maintainers = with lib.maintainers; [ AndersonTorres ];
+  meta.maintainers = [ ];
 
   options.programs.havoc = {
     enable = lib.mkEnableOption "Havoc terminal";
@@ -17,7 +17,7 @@ in
     package = lib.mkPackageOption pkgs "havoc" { nullable = true; };
 
     settings = lib.mkOption {
-      type = iniFormat.type;
+      inherit (iniFormat) type;
       default = { };
       description = ''
         Configuration written to

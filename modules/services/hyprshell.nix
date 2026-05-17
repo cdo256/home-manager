@@ -25,11 +25,11 @@ in
     package = mkPackageOption pkgs "hyprshell" { nullable = true; };
 
     settings = mkOption {
-      type = jsonFormat.type;
+      inherit (jsonFormat) type;
       default = { };
       description = ''
-        Configuration settings for hyprshell. All the avaiblable
-        options can be found here: <https://github.com/H3rmt/hyprshell/blob/hyprshell-release/CONFIGURE.md#config-options>
+        Configuration settings for hyprshell. All the available
+        options can be found here: <https://github.com/H3rmt/hyprshell/blob/hyprshell-release/docs/CONFIGURE.md#config-options>
       '';
     };
 
@@ -38,7 +38,7 @@ in
       default = "";
       description = ''
         CSS file for customizing hyprshell. All the available
-        options can be found here: <https://github.com/H3rmt/hyprshell/blob/hyprshell-release/CONFIGURE.md#css>
+        options can be found here: <https://github.com/H3rmt/hyprshell/blob/hyprshell-release/docs/CONFIGURE.md#css>
       '';
     };
 

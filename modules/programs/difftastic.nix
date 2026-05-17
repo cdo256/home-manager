@@ -67,15 +67,18 @@ in
     options = mkOption {
       type =
         with types;
-        attrsOf (oneOf [
-          str
-          int
-          bool
-        ]);
+        let
+          atom = oneOf [
+            str
+            int
+            bool
+          ];
+        in
+        attrsOf (either atom (listOf atom));
       default = { };
       example = {
         color = "dark";
-        sort-path = true;
+        sort-paths = true;
         tab-width = 8;
       };
       description = "Configuration options for {command}`difftastic`. See {command}`difft --help`";
@@ -104,6 +107,16 @@ in
         '';
       };
     };
+
+    jujutsu = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Whether to enable jujutsu integration for difftastic.
+        '';
+      };
+    };
   };
 
   config =
@@ -129,7 +142,7 @@ in
           enable = lib.mkDefault true;
           iniContent =
             let
-              difftCommand = "${lib.getExe cfg.package} ${lib.cli.toGNUCommandLineShell { } cfg.options}";
+              difftCommand = "${lib.getExe cfg.package} ${lib.cli.toCommandLineShellGNU { } cfg.options}";
             in
             mkMerge [
               {
@@ -141,6 +154,19 @@ in
               })
             ];
         };
+      })
+
+      (mkIf (cfg.enable && cfg.jujutsu.enable) {
+        programs.jujutsu.settings.ui.diff-formatter = [
+          (lib.getExe cfg.package)
+        ]
+        ++ (lib.cli.toCommandLineGNU { } cfg.options)
+        ++ [
+          "--color=always"
+          "--sort-paths"
+          "$left"
+          "$right"
+        ];
       })
     ];
 }

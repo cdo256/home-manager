@@ -24,10 +24,11 @@ let
     lib.pipe opt [
       (lib.replaceStrings [ "-" ] [ "_" ])
       lib.toUpper
-      (lib.add "RCLONE_")
+      (upper: "RCLONE_" + upper)
     ];
 
-  toEnvVal = v: if lib.isBool v then lib.boolToString v else v;
+  toEnvVal = v: if lib.isBool v then lib.boolToString v else lib.escapeShellArg v;
+
   attrsToEnvs =
     attrs:
     lib.pipe attrs [
@@ -54,6 +55,7 @@ let
       (attrsToEnvs (
         {
           RESTIC_PROGRESS_FPS = backup.progressFps;
+          RESTIC_PASSWORD_COMMAND = backup.passwordCommand;
           RESTIC_PASSWORD_FILE = backup.passwordFile;
           RESTIC_REPOSITORY = backup.repository;
           RESTIC_REPOSITORY_FILE = backup.repositoryFile;
@@ -62,15 +64,13 @@ let
       ))
     ];
 
-  inherit (pkgs.stdenv.hostPlatform) isLinux;
-
   # Until we have launchd support (#7924), mark the options
   # not used in the helper script as "linux exclusive"
   linuxExclusive =
     option:
     option
     // {
-      readOnly = pkgs.stdenv.hostPlatform.isDarwin;
+      readOnly = !pkgs.stdenv.hostPlatform.isLinux;
 
       description = option.description + ''
 
@@ -105,11 +105,23 @@ in
               ssh-package = lib.mkPackageOption pkgs "openssh" { };
 
               passwordFile = lib.mkOption {
-                type = lib.types.str;
+                type = lib.types.nullOr lib.types.str;
+                default = null;
                 description = ''
                   A file containing the repository password.
                 '';
                 example = "/etc/nixos/restic-password";
+              };
+
+              passwordCommand = lib.mkOption {
+                type = lib.types.nullOr lib.types.str;
+                default = null;
+                description = ''
+                  Command which returns one of the repository's passwords. Since
+                  {env}`PATH` is set in the systemd service you need to provide
+                  the absolute path to the executable.
+                '';
+                example = lib.literalExpression ''"''${lib.getExe pkgs.gopass} show backups"'';
               };
 
               environmentFile = lib.mkOption {
@@ -129,6 +141,7 @@ in
                   attrsOf (oneOf [
                     str
                     bool
+                    int
                   ]);
                 default = { };
                 apply = lib.mapAttrs' (opt: v: lib.nameValuePair (fmtRcloneOpt opt) v);
@@ -393,219 +406,222 @@ in
     };
   };
 
-  config = lib.mkIf cfg.enable (
-    lib.mkMerge [
-      {
-        assertions = lib.mapAttrsToList (n: v: {
-          assertion = lib.xor (v.repository == null) (v.repositoryFile == null);
-          message = "services.restic.backups.${n}: exactly one of repository or repositoryFile should be set";
-        }) cfg.backups;
-      }
+  config = lib.mkIf cfg.enable {
+    assertions =
+      let
+        assertBackup =
+          { assertion, message }:
+          lib.mapAttrsToList (n: v: {
+            assertion = assertion n v;
+            message = "services.restic.backups.${n}: ${message}";
+          }) cfg.backups;
 
-      (lib.mkIf isLinux {
-        systemd.user.services = lib.mapAttrs' (
-          name: backup:
-          let
-            doBackup = backup.dynamicFilesFrom != null || backup.paths != [ ];
-            doPrune = backup.pruneOpts != [ ];
-            doCheck = backup.runCheck;
-            serviceName = "restic-backups-${name}";
+        mustSetRepository = assertBackup {
+          assertion = _n: v: lib.xor (v.repository == null) (v.repositoryFile == null);
+          message = "exactly one of repository or repositoryFile should be set";
+        };
 
-            extraOptions = lib.concatMap (arg: [
-              "-o"
-              arg
-            ]) backup.extraOptions;
+        mustSetPassword = assertBackup {
+          assertion = _n: v: lib.xor (v.passwordCommand == null) (v.passwordFile == null);
+          message = "exactly one of passwordCommand or passwordFile should be set";
+        };
+      in
+      mustSetPassword ++ mustSetRepository;
 
-            excludeFile = pkgs.writeText "exclude-patterns" (lib.concatLines backup.exclude);
-            excludeFileFlag = "--exclude-file=${excludeFile}";
+    systemd.user.services = lib.mapAttrs' (
+      name: backup:
+      let
+        doBackup = backup.dynamicFilesFrom != null || backup.paths != [ ];
+        doPrune = backup.pruneOpts != [ ];
+        doCheck = backup.runCheck;
+        serviceName = "restic-backups-${name}";
 
-            filesFromTmpFile = "/run/user/$UID/${serviceName}/includes";
-            filesFromFlag = "--files-from=${filesFromTmpFile}";
+        extraOptions = lib.concatMap (arg: [
+          "-o"
+          arg
+        ]) backup.extraOptions;
 
-            inhibitCmd = lib.optionals backup.inhibitsSleep [
-              "${pkgs.systemd}/bin/systemd-inhibit"
-              "--mode='block'"
-              "--who='restic'"
-              "--what='idle'"
-              "--why=${lib.escapeShellArg "Scheduled backup ${name}"}"
-            ];
+        excludeFile = pkgs.writeText "exclude-patterns" (lib.concatLines backup.exclude);
+        excludeFileFlag = "--exclude-file=${excludeFile}";
 
-            mkResticCmd' =
-              pre: args:
-              lib.concatStringsSep " " (
-                pre ++ lib.singleton (lib.getExe backup.package) ++ extraOptions ++ lib.flatten args
-              );
-            mkResticCmd = mkResticCmd' [ ];
+        filesFromTmpFile = "/run/user/$UID/${serviceName}/includes";
+        filesFromFlag = "--files-from=${filesFromTmpFile}";
 
-            backupCmd =
-              "${lib.getExe pkgs.bash} -c "
-              + lib.escapeShellArg (
-                mkResticCmd' inhibitCmd [
-                  "backup"
-                  backup.extraBackupArgs
-                  excludeFileFlag
-                  filesFromFlag
-                ]
-              );
+        inhibitCmd = lib.optionals backup.inhibitsSleep [
+          "${pkgs.systemd}/bin/systemd-inhibit"
+          "--mode='block'"
+          "--who='restic'"
+          "--what='idle'"
+          "--why=${lib.escapeShellArg "Scheduled backup ${name}"}"
+        ];
 
-            forgetCmd = mkResticCmd [
-              "forget"
-              "--prune"
-              backup.pruneOpts
-            ];
-            checkCmd = mkResticCmd [
-              "check"
-              backup.checkOpts
-            ];
-            unlockCmd = mkResticCmd "unlock";
-          in
-          lib.nameValuePair serviceName {
-            Unit = {
-              Description = "Restic backup service";
-              Wants = [ "network-online.target" ];
-              After = [ "network-online.target" ];
-            };
+        mkResticCmd' =
+          pre: args:
+          lib.concatStringsSep " " (
+            pre ++ lib.singleton (lib.getExe backup.package) ++ extraOptions ++ lib.flatten args
+          );
+        mkResticCmd = mkResticCmd' [ ];
 
-            Service = {
-              Type = "oneshot";
+        backupCmd =
+          "${lib.getExe pkgs.bash} -c "
+          + lib.escapeShellArg (
+            mkResticCmd' inhibitCmd [
+              "backup"
+              backup.extraBackupArgs
+              excludeFileFlag
+              filesFromFlag
+            ]
+          );
 
-              X-RestartIfChanged = true;
-              RuntimeDirectory = serviceName;
-              CacheDirectory = serviceName;
-              CacheDirectoryMode = "0700";
-              PrivateTmp = true;
+        forgetCmd = mkResticCmd [
+          "forget"
+          "--prune"
+          backup.pruneOpts
+        ];
+        checkCmd = mkResticCmd [
+          "check"
+          backup.checkOpts
+        ];
+        unlockCmd = mkResticCmd "unlock";
+      in
+      lib.nameValuePair serviceName {
+        Unit = {
+          Description = "Restic backup service";
+        };
 
-              Environment = mkEnvironment backup ++ [ "RESTIC_CACHE_DIR=%C/${serviceName}" ];
+        Service = {
+          Type = "oneshot";
 
-              ExecStart =
-                lib.optional doBackup backupCmd
-                ++ lib.optionals doPrune [
-                  unlockCmd
-                  forgetCmd
-                ]
-                ++ lib.optional doCheck checkCmd;
+          X-RestartIfChanged = true;
+          RuntimeDirectory = serviceName;
+          CacheDirectory = serviceName;
+          CacheDirectoryMode = "0700";
 
-              ExecStartPre = lib.getExe (
-                pkgs.writeShellApplication {
-                  name = "${serviceName}-exec-start-pre";
-                  inherit runtimeInputs;
-                  text = ''
-                    set -x
+          Environment = mkEnvironment backup ++ [ "RESTIC_CACHE_DIR=%C/${serviceName}" ];
 
-                    ${lib.optionalString (backup.backupPrepareCommand != null) ''
-                      ${pkgs.writeShellScript "backupPrepareCommand" backup.backupPrepareCommand}
-                    ''}
+          ExecStart =
+            lib.optional doBackup backupCmd
+            ++ lib.optionals doPrune [
+              unlockCmd
+              forgetCmd
+            ]
+            ++ lib.optional doCheck checkCmd;
 
-                    ${lib.optionalString (backup.initialize) ''
-                      ${
-                        mkResticCmd [
-                          "cat"
-                          "config"
-                        ]
-                      } 2>/dev/null || ${mkResticCmd "init"}
-                    ''}
+          ExecStartPre = lib.getExe (
+            pkgs.writeShellApplication {
+              name = "${serviceName}-exec-start-pre";
+              inherit runtimeInputs;
+              text = ''
+                set -x
 
-                    ${lib.optionalString (backup.paths != null && backup.paths != [ ]) ''
-                      cat ${pkgs.writeText "staticPaths" (lib.concatLines backup.paths)} >> ${filesFromTmpFile}
-                    ''}
+                ${lib.optionalString (backup.backupPrepareCommand != null) ''
+                  ${pkgs.writeShellScript "backupPrepareCommand" backup.backupPrepareCommand}
+                ''}
 
-                    ${lib.optionalString (backup.dynamicFilesFrom != null) ''
-                      ${pkgs.writeShellScript "dynamicFilesFromScript" backup.dynamicFilesFrom} >> ${filesFromTmpFile}
-                    ''}
-                  '';
-                }
-              );
+                ${lib.optionalString (backup.initialize) ''
+                  ${
+                    mkResticCmd [
+                      "cat"
+                      "config"
+                    ]
+                  } 2>/dev/null || ${mkResticCmd "init"}
+                ''}
 
-              ExecStopPost = lib.getExe (
-                pkgs.writeShellApplication {
-                  name = "${serviceName}-exec-stop-post";
-                  inherit runtimeInputs;
-                  text = ''
-                    set -x
+                ${lib.optionalString (backup.paths != null && backup.paths != [ ]) ''
+                  cat ${pkgs.writeText "staticPaths" (lib.concatLines backup.paths)} >> ${filesFromTmpFile}
+                ''}
 
-                    ${lib.optionalString (backup.backupCleanupCommand != null) ''
-                      ${pkgs.writeShellScript "backupCleanupCommand" backup.backupCleanupCommand}
-                    ''}
-                  '';
-                }
-              );
+                ${lib.optionalString (backup.dynamicFilesFrom != null) ''
+                  ${pkgs.writeShellScript "dynamicFilesFromScript" backup.dynamicFilesFrom} >> ${filesFromTmpFile}
+                ''}
+              '';
             }
-            // lib.optionalAttrs (backup.environmentFile != null) {
-              EnvironmentFile = backup.environmentFile;
-            };
-          }
-        ) cfg.backups;
-      })
+          );
 
-      (lib.mkIf isLinux {
-        systemd.user.timers = lib.mapAttrs' (
-          name: backup:
-          lib.nameValuePair "restic-backups-${name}" {
-            Unit.Description = "Restic backup service";
-            Install.WantedBy = [ "timers.target" ];
+          ExecStopPost = lib.getExe (
+            pkgs.writeShellApplication {
+              name = "${serviceName}-exec-stop-post";
+              inherit runtimeInputs;
+              text = ''
+                set -x
 
-            Timer = backup.timerConfig;
-          }
-        ) (lib.filterAttrs (_: v: v.timerConfig != null) cfg.backups);
-      })
-
-      {
-        home.packages = lib.mapAttrsToList (
-          name: backup:
-          let
-            serviceName = "restic-backups-${name}";
-            environment = mkEnvironment backup;
-            notPathVar = x: !(lib.hasPrefix "PATH" x);
-            extraOptions = lib.concatMap (arg: [
-              "-o"
-              arg
-            ]) backup.extraOptions;
-            restic = lib.concatStringsSep " " (
-              lib.flatten [
-                (lib.getExe backup.package)
-                extraOptions
-              ]
-            );
-          in
-          pkgs.writeShellApplication {
-            name = "restic-${name}";
-            excludeShellChecks = [
-              # https://github.com/koalaman/shellcheck/issues/1986
-              "SC2034"
-              # Allow sourcing environmentFile
-              "SC1091"
-            ];
-            bashOptions = [
-              "errexit"
-              "nounset"
-              "allexport"
-            ];
-            text = ''
-              ${lib.optionalString (backup.environmentFile != null) ''
-                source ${backup.environmentFile}
-              ''}
-
-              # Set same environment variables as the systemd service
-              ${lib.pipe environment [
-                (lib.filter notPathVar)
-                lib.concatLines
-              ]}
-
-              RESTIC_CACHE_DIR=${config.xdg.cacheHome}/${serviceName}
-
-              PATH=${
-                lib.pipe environment [
-                  (lib.filter (lib.hasPrefix "PATH="))
-                  lib.head
-                  (lib.removePrefix "PATH=")
-                ]
-              }:$PATH
-
-              exec ${restic} "$@"
-            '';
-          }
-        ) (lib.filterAttrs (_: v: v.createWrapper) cfg.backups);
+                ${lib.optionalString (backup.backupCleanupCommand != null) ''
+                  ${pkgs.writeShellScript "backupCleanupCommand" backup.backupCleanupCommand}
+                ''}
+              '';
+            }
+          );
+        }
+        // lib.optionalAttrs (backup.environmentFile != null) {
+          EnvironmentFile = backup.environmentFile;
+        };
       }
-    ]
-  );
+    ) cfg.backups;
+
+    systemd.user.timers = lib.mapAttrs' (
+      name: backup:
+      lib.nameValuePair "restic-backups-${name}" {
+        Unit.Description = "Restic backup service";
+        Install.WantedBy = [ "timers.target" ];
+
+        Timer = backup.timerConfig;
+      }
+    ) (lib.filterAttrs (_: v: v.timerConfig != null) cfg.backups);
+
+    home.packages = lib.mapAttrsToList (
+      name: backup:
+      let
+        serviceName = "restic-backups-${name}";
+        environment = mkEnvironment backup;
+        notPathVar = x: !(lib.hasPrefix "PATH" x);
+        extraOptions = lib.concatMap (arg: [
+          "-o"
+          arg
+        ]) backup.extraOptions;
+        restic = lib.concatStringsSep " " (
+          lib.flatten [
+            (lib.getExe backup.package)
+            extraOptions
+          ]
+        );
+      in
+      pkgs.writeShellApplication {
+        name = "restic-${name}";
+        excludeShellChecks = [
+          # https://github.com/koalaman/shellcheck/issues/1986
+          "SC2034"
+          # Allow sourcing environmentFile
+          "SC1091"
+        ];
+        bashOptions = [
+          "errexit"
+          "nounset"
+          "allexport"
+        ];
+        text = ''
+          ${lib.optionalString (backup.environmentFile != null) ''
+            source ${backup.environmentFile}
+          ''}
+
+          # Set same environment variables as the systemd service
+          ${lib.pipe environment [
+            (lib.filter notPathVar)
+            lib.concatLines
+          ]}
+
+          RESTIC_CACHE_DIR=${config.xdg.cacheHome}/${serviceName}
+
+          PATH=${
+            lib.pipe environment [
+              (lib.filter (lib.hasPrefix "PATH="))
+              lib.head
+              (lib.removePrefix "PATH=")
+            ]
+          }:$PATH
+
+          exec ${restic} "$@"
+        '';
+      }
+    ) (lib.filterAttrs (_: v: v.createWrapper) cfg.backups);
+  };
 }

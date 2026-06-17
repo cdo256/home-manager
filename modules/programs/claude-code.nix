@@ -19,17 +19,29 @@ let
 
   upstreamConfigDir = "${config.home.homeDirectory}/.claude";
 
-  mkMcpServer =
+  isMcpServerEnabled =
     server:
-    (removeAttrs server [ "disabled" ])
-    // (optionalAttrs (server ? url) { type = "http"; })
-    // (optionalAttrs (server ? command) { type = "stdio"; })
-    // {
-      enabled = !(server.disabled or false);
+    let
+      enabled = server.enabled or null;
+      disabled = (server.disabled or false) == true;
+    in
+    enabled != false && !disabled;
+
+  transformMcpServer =
+    name: server:
+    lib.hm.mcp.transformMcpServer {
+      inherit server;
+      exclude = [ "enabled" ];
+      extraTransforms = [
+        lib.hm.mcp.addType
+        (lib.hm.mcp.wrapEnvFilesCommand { inherit pkgs name; }) # envFiles currently still need wrapping https://github.com/anthropics/claude-code/issues/28942
+      ];
     };
 
-  transformedMcpServers = optionalAttrs (cfg.enableMcpIntegration && config.programs.mcp.enable) (
-    lib.mapAttrs (_name: mkMcpServer) config.programs.mcp.servers
+  transformedMcpServers = lib.optionalAttrs (cfg.enableMcpIntegration && config.programs.mcp.enable) (
+    lib.mapAttrs transformMcpServer (
+      lib.filterAttrs (_: isMcpServerEnabled) config.programs.mcp.servers
+    )
   );
 
   mkContentOption =
@@ -548,20 +560,20 @@ in
     let
       mkSourceEntry = content: if lib.isPath content then { source = content; } else { text = content; };
 
-      isStorePathString =
-        content: builtins.isString content && lib.hasPrefix "${builtins.storeDir}/" content;
-      isPathLikeContent = content: lib.isPath content || isStorePathString content;
-
       mkMarkdownEntries =
         subdir: attrs:
         lib.mapAttrs' (
           name: content: nameValuePair "${cfg.configDir}/${subdir}/${name}.md" (mkSourceEntry content)
         ) attrs;
 
-      mkTextEntries =
-        subdir: attrs:
+      mkHookEntries =
+        attrs:
         lib.mapAttrs' (
-          name: content: nameValuePair "${cfg.configDir}/${subdir}/${name}" { text = content; }
+          name: content:
+          nameValuePair "${cfg.configDir}/hooks/${name}" {
+            text = content;
+            executable = true;
+          }
         ) attrs;
 
       mkRecursiveDirAttrs =
@@ -575,14 +587,14 @@ in
 
       mkSkillEntry =
         name: content:
-        if isPathLikeContent content && lib.pathIsDirectory content then
+        if lib.hm.strings.isPathLike content && lib.pathIsDirectory content then
           nameValuePair "${cfg.configDir}/skills/${name}" {
             source = content;
             recursive = true;
           }
         else
           nameValuePair "${cfg.configDir}/skills/${name}/SKILL.md" (
-            if isPathLikeContent content then { source = content; } else { text = content; }
+            if lib.hm.strings.isPathLike content then { source = content; } else { text = content; }
           );
 
       mkMarketplaceEntry = _name: content: {
@@ -624,7 +636,7 @@ in
             message = "`programs.claude-code.package` cannot be null when `mcpServers`, `lspServers`, `enableMcpIntegration`, or `plugins` is configured";
           }
           {
-            assertion = !isPathLikeContent cfg.skills || lib.pathIsDirectory cfg.skills;
+            assertion = !lib.hm.strings.isPathLike cfg.skills || lib.pathIsDirectory cfg.skills;
             message = "`programs.claude-code.skills` must be a directory when set to a path";
           }
         ]
@@ -632,7 +644,9 @@ in
 
       programs.claude-code.finalPackage =
         let
-          mergedMcpServers = transformedMcpServers // cfg.mcpServers;
+          mergedMcpServers =
+            transformedMcpServers
+            // lib.mapAttrs (_: server: removeAttrs (lib.hm.mcp.addType server) [ "enabled" ]) cfg.mcpServers;
           pluginFiles =
             lib.optional (mergedMcpServers != { }) {
               name = ".mcp.json";
@@ -721,13 +735,13 @@ in
           (mkRecursiveDirAttrs "commands" cfg.commandsDir)
           (mkRecursiveDirAttrs "hooks" cfg.hooksDir)
           (mkRecursiveDirAttrs "rules" cfg.rulesDir)
-          (lib.mkIf (isPathLikeContent cfg.skills) {
+          (lib.mkIf (lib.hm.strings.isPathLike cfg.skills) {
             "${cfg.configDir}/skills" = {
               source = cfg.skills;
               recursive = true;
             };
           })
-          (mkTextEntries "hooks" cfg.hooks)
+          (mkHookEntries cfg.hooks)
           (lib.optionalAttrs (builtins.isAttrs cfg.skills) (lib.mapAttrs' mkSkillEntry cfg.skills))
           (mkMarkdownEntries "output-styles" cfg.outputStyles)
         ];

@@ -175,6 +175,12 @@
     github = "epixtm";
     githubId = 168025607;
   };
+  ErinaYip = {
+    name = "erina";
+    email = "erinayip@outlook.com";
+    github = "ErinaYip";
+    githubId = 227132255;
+  };
   exzombie = {
     name = "Jure Varlec";
     email = "jure@varlec.si";
@@ -301,6 +307,12 @@
     email = "kalhauge@users.noreply.github.com";
     github = "kalhauge";
     githubId = 1182166;
+  };
+  kayskayskays = {
+    name = "Kays";
+    email = "115312476+kayskayskays@users.noreply.github.com";
+    github = "kayskayskays";
+    githubId = 115312476;
   };
   kmaasrud = {
     name = "Knut Magnus Aasrud";
@@ -523,6 +535,12 @@
     github = "rszamszur";
     githubId = 10353018;
   };
+  semi710 = {
+    name = "Nikhil Singh";
+    email = "nik.singh710@gmail.com";
+    github = "semi710";
+    githubId = 60490474;
+  };
   silmarp = {
     name = "Silmar Pereira da Silva Junior";
     email = "silmarjr2@gmail.com";
@@ -534,6 +552,17 @@
     email = "125882337+s0racat@users.noreply.github.com";
     github = "s0racat";
     githubId = 125882337;
+  };
+  SunOfLife1 = {
+    name = "SunOfLife1";
+    github = "SunOfLife1";
+    githubId = 30405063;
+  };
+  superflash41 = {
+    name = "Saymon Nicho";
+    email = "saymon.nicho@pucp.edu.pe";
+    github = "superflash41";
+    githubId = 102434258;
   };
   yarn = {
     name = "yarncat";

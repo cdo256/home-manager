@@ -177,7 +177,9 @@ import nmtSrc {
       (
         [
           # keep-sorted start case=no numeric=yes
+          ./lib/deprecations
           ./lib/generators
+          ./lib/mcp
           ./lib/types
           ./modules/files
           ./modules/home-environment
@@ -186,6 +188,7 @@ import nmtSrc {
           ./modules/misc/news
           ./modules/misc/nix
           ./modules/misc/nix-remote-build
+          ./modules/misc/nixpkgs-disabled
           ./modules/misc/specialisation
           ./modules/misc/ssh-auth-sock/default.nix
           ./modules/misc/xdg

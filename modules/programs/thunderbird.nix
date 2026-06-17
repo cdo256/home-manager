@@ -190,7 +190,7 @@ let
     };
 
   toThunderbirdAccount =
-    account: profile:
+    account:
     let
       inherit (account) id;
       addresses = [ account.address ] ++ account.aliases;
@@ -205,7 +205,6 @@ let
       "mail.accountmanager.defaultaccount" = "account_${id}";
     }
     // optionalAttrs (account.imap != null) {
-      "mail.server.server_${id}.directory" = "${thunderbirdProfilesPath}/${profile.name}/ImapMail/${id}";
       "mail.server.server_${id}.directory-rel" = "[ProfD]ImapMail/${id}";
       "mail.server.server_${id}.hostname" = account.imap.host;
       "mail.server.server_${id}.login_at_startup" = true;
@@ -245,7 +244,6 @@ let
       "mail.outgoingserver.ews_${id}.key" = "ews_${id}";
       "mail.outgoingserver.ews_${id}.username" = account.userName;
 
-      "mail.server.server_${id}.directory" = "${thunderbirdProfilesPath}/${profile.name}/Mail/${id}";
       "mail.server.server_${id}.directory-rel" = "[ProfD]Mail/${id}";
       "mail.server.server_${id}.hostname" = account.ews.host;
       "mail.server.server_${id}.ews_url" = account.ews.serviceDescriptionURL;
@@ -330,7 +328,7 @@ let
     );
 
   toThunderbirdFeed =
-    feed: profile:
+    feed:
     let
       inherit (feed) id;
     in
@@ -338,8 +336,6 @@ let
       "mail.account.account_${id}.server" = "server_${id}";
       "mail.server.server_${id}.name" = feed.name;
       "mail.server.server_${id}.type" = "rss";
-      "mail.server.server_${id}.directory" =
-        "${thunderbirdProfilesPath}/${profile.name}/Mail/Feeds-${id}";
       "mail.server.server_${id}.directory-rel" = "[ProfD]Mail/Feeds-${id}";
       "mail.server.server_${id}.hostname" = "Feeds-${id}";
     };
@@ -522,21 +518,19 @@ in
                 settings = mkOption {
                   type = thunderbirdJson;
                   default = { };
-                  example = literalExpression ''
-                    {
-                      "mail.spellcheck.inline" = false;
-                      "mailnews.database.global.views.global.columns" = {
-                        selectCol = {
-                          visible = false;
-                          ordinal = 1;
-                        };
-                        threadCol = {
-                          visible = true;
-                          ordinal = 2;
-                        };
+                  example = {
+                    "mail.spellcheck.inline" = false;
+                    "mailnews.database.global.views.global.columns" = {
+                      selectCol = {
+                        visible = false;
+                        ordinal = 1;
                       };
-                    }
-                  '';
+                      threadCol = {
+                        visible = true;
+                        ordinal = 2;
+                      };
+                    };
+                  };
                   description = ''
                     Preferences to add to this profile's
                     {file}`user.js`.
@@ -689,12 +683,10 @@ in
       settings = mkOption {
         type = thunderbirdJson;
         default = { };
-        example = literalExpression ''
-          {
-            "general.useragent.override" = "";
-            "privacy.donottrackheader.enabled" = true;
-          }
-        '';
+        example = {
+          "general.useragent.override" = "";
+          "privacy.donottrackheader.enabled" = true;
+        };
         description = ''
           Attribute set of Thunderbird preferences to be added to
           all profiles.
@@ -739,9 +731,10 @@ in
               profiles = mkOption {
                 type = with types; listOf str;
                 default = [ ];
-                example = literalExpression ''
-                  [ "profile1" "profile2" ]
-                '';
+                example = [
+                  "profile1"
+                  "profile2"
+                ];
                 description = ''
                   List of Thunderbird profiles for which this account should be
                   enabled. If this list is empty (the default), this account will
@@ -854,17 +847,15 @@ in
                   });
                 default = [ ];
                 defaultText = literalExpression "[ ]";
-                example = literalExpression ''
-                  [
-                    {
-                      name = "Mark as Read on Archive";
-                      enabled = true;
-                      type = "128";
-                      action = "Mark read";
-                      condition = "ALL";
-                    }
-                  ]
-                '';
+                example = [
+                  {
+                    name = "Mark as Read on Archive";
+                    enabled = true;
+                    type = "128";
+                    action = "Mark read";
+                    condition = "ALL";
+                  }
+                ];
                 description = ''
                   List of message filters to add to this Thunderbird account configuration.
 
@@ -894,9 +885,10 @@ in
             profiles = mkOption {
               type = with types; listOf str;
               default = [ ];
-              example = literalExpression ''
-                [ "profile1" "profile2" ]
-              '';
+              example = [
+                "profile1"
+                "profile2"
+              ];
               description = ''
                 List of Thunderbird profiles for which this account should be
                 enabled. If this list is empty (the default), this account will
@@ -961,9 +953,10 @@ in
             profiles = mkOption {
               type = with types; listOf str;
               default = [ ];
-              example = literalExpression ''
-                [ "profile1" "profile2" ]
-              '';
+              example = [
+                "profile1"
+                "profile2"
+              ];
               description = ''
                 List of Thunderbird profiles for which this account should be
                 enabled. If this list is empty (the default), this account will
@@ -1205,10 +1198,10 @@ in
 
                   profile.settings
                 ]
-                ++ (map (a: toThunderbirdAccount a profile) emailAccounts)
+                ++ (map toThunderbirdAccount emailAccounts)
                 ++ (map (calendar: toThunderbirdCalendar calendar profile) calendarAccounts)
                 ++ (map (contact: toThunderbirdContact contact profile) contactAccounts)
-                ++ (map (feed: toThunderbirdFeed feed profile) feedAccounts)
+                ++ (map toThunderbirdFeed feedAccounts)
               )) profile.extraConfig;
             };
 

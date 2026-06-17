@@ -49,7 +49,14 @@ let
       default = { };
       apply = lib.mergeAttrs {
         vfs-cache-mode = "full";
-        cache-dir = "%C/rclone";
+        # On Linux the unit runs under systemd, so keep the %C specifier:
+        # it is expanded at unit-start time to the live $XDG_CACHE_HOME
+        # (falling back to ~/.cache), preserving the pre-Darwin behavior
+        # even for users who set XDG_CACHE_HOME outside Home Manager.
+        # launchd has no equivalent specifier, so Darwin must use the
+        # Home Manager-evaluated path.
+        cache-dir =
+          if pkgs.stdenv.hostPlatform.isLinux then "%C/rclone" else "${config.xdg.cacheHome}/rclone";
       };
       description = ''
         An attribute set of option values passed to the command.
@@ -63,84 +70,182 @@ let
     };
   };
 
-  # creates a sidecar user service. returns an attrset of systemd services
+  # Builder for a per-sidecar systemd user unit. Returns the value half
+  # of a `nameValuePair` (the unit attrs).
+  mkSystemdSidecar =
+    {
+      remoteName,
+      sidecar,
+      sidecarPath,
+      isMount,
+      cmdName,
+    }:
+    {
+      Unit = {
+        Description = "Rclone ${
+          if isMount then "FUSE daemon" else "protocol serving"
+        } for ${remoteName}:${sidecarPath}";
+        Requires = [ "rclone-config.service" ];
+        After = [ "rclone-config.service" ];
+      };
+
+      Service = {
+        Type =
+          if !isMount && !(builtins.elem sidecar.protocol serveProtocolNotifies) then "simple" else "notify";
+        Environment =
+          # PATH is set explicitly so fusermount/fusermount3 is found on both
+          # NixOS (/run/wrappers/bin) and standalone home-manager hosts running
+          # other Linux distros (where the FUSE setuid helper lives in standard
+          # /usr or /sbin paths). Setting Environment=PATH= replaces systemd's
+          # inherited PATH, so we must enumerate the non-NixOS locations too.
+          (lib.optional isMount "PATH=/run/wrappers/bin:/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+          ++ lib.optional (sidecar.logLevel != null) "RCLONE_LOG_LEVEL=${sidecar.logLevel}";
+        SuccessExitStatus = "143";
+
+        ExecStartPre = lib.mkIf isMount "${pkgs.coreutils}/bin/mkdir -p ${lib.escapeShellArg sidecar.mountPoint}";
+        ExecStart = lib.concatStringsSep " " (
+          [ "${lib.getExe cfg.package} ${cmdName}" ]
+          ++ (
+            if isMount then
+              [
+                (lib.cli.toCommandLineShellGNU { } sidecar.options)
+                (lib.escapeShellArg "${remoteName}:${sidecarPath}")
+                (lib.escapeShellArg sidecar.mountPoint)
+              ]
+            else
+              [
+                (lib.escapeShellArg sidecar.protocol)
+                (lib.cli.toCommandLineShellGNU { } sidecar.options)
+                (lib.escapeShellArg "${remoteName}:${sidecarPath}")
+              ]
+          )
+        );
+        Restart = "on-failure";
+      };
+
+      Install.WantedBy = lib.optional (
+        if isMount then sidecar.autoMount else sidecar.autoStart
+      ) "default.target";
+    };
+
+  # Builder for a per-sidecar launchd agent. Returns the value half
+  # of a `nameValuePair` (the agent attrs).
+  mkLaunchdSidecar =
+    {
+      remoteName,
+      sidecar,
+      sidecarPath,
+      isMount,
+      cmdName,
+    }:
+    let
+      label = "rclone-${cmdName}:${replaceIllegalChars sidecarPath}@${remoteName}";
+      runAtLoad = if isMount then sidecar.autoMount else sidecar.autoStart;
+      rcloneArgs = [
+        (lib.getExe cfg.package)
+        cmdName
+      ]
+      ++ (lib.cli.toCommandLineGNU { } sidecar.options)
+      ++ (
+        if isMount then
+          [
+            "${remoteName}:${sidecarPath}"
+            sidecar.mountPoint
+          ]
+        else
+          [
+            sidecar.protocol
+            "${remoteName}:${sidecarPath}"
+          ]
+      );
+    in
+    {
+      enable = true;
+      config = {
+        ProgramArguments = [
+          (lib.getExe rcloneSidecarWrapper)
+        ]
+        ++ (lib.optionals isMount [
+          "--mkdir"
+          sidecar.mountPoint
+        ])
+        ++ rcloneArgs;
+        RunAtLoad = runAtLoad;
+        KeepAlive = {
+          SuccessfulExit = false;
+          Crashed = true;
+        };
+        StandardOutPath = "${config.home.homeDirectory}/Library/Logs/rclone/${label}.log";
+        StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/rclone/${label}.err.log";
+        EnvironmentVariables =
+          if sidecar.logLevel != null then { RCLONE_LOG_LEVEL = sidecar.logLevel; } else null;
+      };
+    };
+
+  # Iterate cfg.remotes × remote.${sidecarType}, applying the supplied
+  # value builder. Produces an attrset keyed by service name.
   mkRcloneSidecars =
-    # type of the sidecar, either "mounts" or "serve" corresponding to options
-    sidecarType:
+    sidecarType: mkValue:
     lib.listToAttrs (
       lib.concatMap (
-        _remote: # remote name + remote config
+        _remote:
         let
           remoteName = _remote.name;
           remote = _remote.value;
         in
         lib.concatMap (
-          _sidecar: # sidecar path + sidecar config
+          _sidecar:
           let
-            # a sidecar is either a mount or a protocol-serve
             sidecarPath = _sidecar.name;
             sidecar = _sidecar.value;
-
-            # there are currently only 2 types mount/serve - this may need changed in the future
             isMount = sidecarType == "mounts";
-            # name of the rclone command to use - also used in service name
             cmdName = if isMount then "mount" else "serve";
           in
           lib.optional sidecar.enable (
-            lib.nameValuePair "rclone-${cmdName}:${replaceIllegalChars sidecarPath}@${remoteName}" {
-              Unit = {
-                Description = "Rclone ${
-                  if isMount then "FUSE daemon" else "protocol serving"
-                } for ${remoteName}:${sidecarPath}";
-                Requires = [ "rclone-config.service" ];
-                After = [ "rclone-config.service" ];
-              };
-
-              Service = {
-                Type =
-                  # all services can be Type=notify except for serve protocols that don't notify
-                  if sidecarType == "serve" && !(builtins.elem sidecar.protocol serveProtocolNotifies) then
-                    "simple"
-                  else
-                    "notify";
-                Environment =
-                  # fusermount/fusermount3
-                  (lib.optional (sidecarType == "mounts") "PATH=/run/wrappers/bin")
-                  ++ lib.optional (sidecar.logLevel != null) "RCLONE_LOG_LEVEL=${sidecar.logLevel}";
-                # rclone exits with code 143 when stopped properly
-                SuccessExitStatus = "143";
-
-                ExecStartPre = lib.mkIf isMount "${pkgs.coreutils}/bin/mkdir -p ${lib.escapeShellArg sidecar.mountPoint}";
-                ExecStart = lib.concatStringsSep " " (
-                  [ "${lib.getExe cfg.package} ${cmdName}" ] # rclone [command]
-                  ++ (
-                    if isMount then
-                      # https://rclone.org/commands/rclone_mount/
-                      [
-                        (lib.cli.toCommandLineShellGNU { } sidecar.options) # [opts]
-                        (lib.escapeShellArg "${remoteName}:${sidecarPath}") # <remote>
-                        (lib.escapeShellArg sidecar.mountPoint) # <mountpoint>
-                      ]
-                    else
-                      # https://rclone.org/commands/rclone_serve/
-                      [
-                        (lib.escapeShellArg sidecar.protocol) # <protocol>
-                        (lib.cli.toCommandLineShellGNU { } sidecar.options) # [opts]
-                        (lib.escapeShellArg "${remoteName}:${sidecarPath}") # <remote>
-                      ]
-                  )
-                );
-                Restart = "on-failure";
-              };
-
-              Install.WantedBy = lib.optional (
-                if isMount then sidecar.autoMount else sidecar.autoStart
-              ) "default.target";
-            }
+            lib.nameValuePair "rclone-${cmdName}:${replaceIllegalChars sidecarPath}@${remoteName}" (mkValue {
+              inherit
+                remoteName
+                sidecar
+                sidecarPath
+                isMount
+                cmdName
+                ;
+            })
           )
         ) (lib.attrsToList (remote.${sidecarType} or { }))
       ) (lib.attrsToList cfg.remotes)
     );
+
+  # Darwin-only: wraps each rclone mount/serve invocation, polling for
+  # rclone.conf before exec'ing. Substitutes for systemd's
+  # `After=rclone-config.service` ordering. Has no consumers on Linux.
+  rcloneSidecarWrapper = pkgs.writeShellApplication {
+    name = "rclone-sidecar-wrapper";
+
+    runtimeInputs = [
+      pkgs.coreutils
+    ];
+
+    text = ''
+      configPath="${config.xdg.configHome}/rclone/rclone.conf"
+      deadline=$(( $(date +%s) + 300 ))
+
+      while [ ! -f "$configPath" ]; do
+        if [ "$(date +%s)" -ge "$deadline" ]; then
+          echo "Timeout waiting for $configPath" >&2
+          exit 1
+        fi
+        sleep 1
+      done
+
+      if [ "''${1:-}" = "--mkdir" ]; then
+        mkdir -p "$2"
+        shift 2
+      fi
+
+      exec "$@"
+    '';
+  };
 
 in
 {
@@ -229,9 +334,10 @@ in
                   must be provided as file paths to the secrets, which will be read at activation
                   time.
 
-                  These values are expanded in a shell context within a systemd service, so
+                  These values are expanded in a shell context within the rclone-config
+                  service (a systemd user service on Linux, a launchd agent on macOS), so
                   you can use bash features like command substitution or variable expansion
-                  (e.g. "''${XDG_RUNTIME_DIR}" as used by agenix).
+                  (e.g. "''${XDG_RUNTIME_DIR}" on Linux, as used by agenix).
                 '';
                 example = lib.literalExpression ''
                   {
@@ -274,6 +380,11 @@ in
                   rclone documentation <https://rclone.org/commands/rclone_mount/> — we create
                   a key-value pair like this:
                   `"path/to/files/on/remote" = { ... }`.
+
+                  On macOS, FUSE mounts additionally require macFUSE
+                  (<https://osxfuse.github.io/>) to be installed and its system extension
+                  approved. Home Manager does not install macFUSE; rclone will surface
+                  a runtime error if it is missing.
                 '';
                 example = lib.literalExpression ''
                   {
@@ -431,17 +542,21 @@ in
 
       requiresUnit = lib.mkOption {
         type = with lib.types; nullOr str;
+        readOnly = !pkgs.stdenv.hostPlatform.isLinux;
         default =
-          lib.foldlAttrs
-            (
-              acc: prov: svc:
-              if isUsingSecretProvisioner prov then svc else acc
-            )
+          if !pkgs.stdenv.hostPlatform.isLinux then
             null
-            {
-              "sops" = "sops-nix.service";
-              "age" = "agenix.service";
-            };
+          else
+            lib.foldlAttrs
+              (
+                acc: prov: svc:
+                if isUsingSecretProvisioner prov then svc else acc
+              )
+              null
+              {
+                "sops" = "sops-nix.service";
+                "age" = "agenix.service";
+              };
         example = "agenix.service";
         description = ''
           The name of a systemd user service that must complete before the rclone
@@ -453,6 +568,12 @@ in
           When using sops-nix or agenix, this value is set automatically to
           sops-nix.service or agenix.service, respectively. Set this manually if you
           use a different secret provisioner.
+
+          Read-only on non-systemd platforms (always null), since this option
+          has no equivalent ordering primitive outside systemd. On macOS, the
+          config-install launchd agent retries on failure (KeepAlive.Crashed),
+          so it will succeed on a subsequent attempt once the secret-provisioner
+          agent has materialized the secret files.
         '';
       };
 
@@ -463,93 +584,102 @@ in
     let
       rcloneConfigPath = "${config.xdg.configHome}/rclone/rclone.conf";
 
-      rcloneConfigService =
-        let
-          # Helper to convert nix bools to strings expected by rclone CLI
-          toRcloneVal = v: if builtins.isBool v then (if v then "true" else "false") else toString v;
+      injectSecret =
+        remote:
+        lib.mapAttrsToList (secret: secretFile: ''
+          if [[ ! -r "${secretFile}" ]]; then
+            echo "Secret \"${secretFile}\" not found"
+            cleanup
+          fi
 
-          # Generate a script that runs 'rclone config update' for each remote
-          rcloneConfigScript = lib.concatStringsSep "\n" (
-            lib.mapAttrsToList (
-              remoteName: remoteData:
-              let
-                staticArgs = lib.concatLists (
-                  lib.mapAttrsToList (k: v: [
-                    k
-                    (lib.escapeShellArg (toRcloneVal v))
-                  ]) remoteData.config
-                );
+          if ! ${lib.getExe cfg.package} config update \
+                 --config "$stagingPath" \
+                 ${remote.name} config_refresh_token=false \
+                 ${secret}="$(cat "${secretFile}")" \
+                 --non-interactive; then
+            echo "Failed to inject secret \"${secretFile}\""
+            cleanup
+          fi
+        '') remote.value.secrets or { };
 
-                secretArgs = lib.concatLists (
-                  lib.mapAttrsToList (k: v: [
-                    k
-                    "\"$(cat ${lib.escapeShellArg v})\""
-                  ]) (remoteData.secrets or { })
-                );
+      injectAllSecrets = lib.concatMap injectSecret (lib.mapAttrsToList lib.nameValuePair cfg.remotes);
 
-                allArgs = staticArgs ++ secretArgs;
-              in
-              ''
-                echo "Updating remote: ${remoteName}"
-                # Ensure all secret files exist before running the command
-                ${lib.concatMapStrings (path: ''
-                  if [ ! -r ${lib.escapeShellArg path} ]; then
-                    echo "Error: Secret file not found: ${path}"
-                    exit 1
-                  fi
-                '') (lib.attrValues (remoteData.secrets or { }))}
+      safeConfig = lib.pipe cfg.remotes [
+        (lib.mapAttrs (_: v: v.config))
+        (iniFormat.generate "rclone.conf@pre-secrets")
+      ];
 
-                ${lib.getExe cfg.package} config update "${remoteName}" \
-                  ${lib.concatStringsSep " " allArgs} \
-                  --non-interactive
-              ''
-            ) cfg.remotes
-          );
-        in
-        lib.mkIf (cfg.remotes != { }) {
-          rclone-config = {
-            Unit = lib.mkMerge [
-              {
-                Description = "Install rclone configuration to ${rcloneConfigPath}";
-              }
+      rcloneConfigScript = pkgs.writeShellApplication {
+        name = "rclone-config";
 
-              (lib.optionalAttrs (cfg.requiresUnit != null) {
-                Requires = [ cfg.requiresUnit ];
-                After = [ cfg.requiresUnit ];
-              })
-            ];
+        runtimeInputs = [
+          pkgs.coreutils
+        ];
 
-            Service = {
-              Type = "oneshot";
-              ExecStart = lib.getExe (
-                pkgs.writeShellApplication {
-                  name = "rclone-config";
+        text = ''
+          configPath="${rcloneConfigPath}"
+          configDir="$(dirname "$configPath")"
+          install -d -m700 "$configDir"
+          stagingPath="$(mktemp "$configDir/.rclone.conf.XXXXXX")"
 
-                  runtimeInputs = [
-                    pkgs.coreutils
-                  ];
+          cleanup() {
+            echo "Failed to render config."
+            rm -f "$stagingPath"
+            exit 1
+          }
 
-                  text = ''
-                    configPath="${rcloneConfigPath}"
-                    mkdir -p "$(dirname "$configPath")"
+          trap cleanup SIGINT
 
-                    # Ensure the file exists so rclone can update it.
-                    # 'config update' creates it if missing, but we ensure permissions here.
-                    if [ ! -f "$configPath" ]; then
-                      touch "$configPath"
-                      chmod 600 "$configPath"
-                    fi
+          # Render and inject secrets into a staging file, then publish it
+          # atomically. The live rclone.conf only ever appears (or changes)
+          # once it is complete with secrets, so a half-rendered or
+          # secrets-less config is never observed and an existing config is
+          # left untouched on failure. This matters on Darwin, where the
+          # sidecar wrapper polls for this file in lieu of systemd ordering.
+          install -v -m600 "${safeConfig}" "$stagingPath"
+          ${lib.concatLines injectAllSecrets}
+          mv -f "$stagingPath" "$configPath"
+        '';
+      };
 
-                    ${rcloneConfigScript}
-                  '';
-                }
-              );
-              Restart = "on-abnormal";
+      mkSystemdConfigService = lib.mkIf (cfg.remotes != { }) {
+        rclone-config = {
+          Unit = lib.mkMerge [
+            {
+              Description = "Install rclone configuration to ${rcloneConfigPath}";
+            }
+
+            (lib.optionalAttrs (cfg.requiresUnit != null) {
+              Requires = [ cfg.requiresUnit ];
+              After = [ cfg.requiresUnit ];
+            })
+          ];
+
+          Service = {
+            Type = "oneshot";
+            ExecStart = lib.getExe rcloneConfigScript;
+            Restart = "on-abnormal";
+          };
+
+          Install.WantedBy = [ "default.target" ];
+        };
+      };
+
+      mkLaunchdConfigService = lib.mkIf (cfg.remotes != { }) {
+        rclone-config = {
+          enable = true;
+          config = {
+            ProgramArguments = [ (lib.getExe rcloneConfigScript) ];
+            RunAtLoad = true;
+            KeepAlive = {
+              SuccessfulExit = false;
+              Crashed = true;
             };
-
-            Install.WantedBy = [ "default.target" ];
+            StandardOutPath = "${config.home.homeDirectory}/Library/Logs/rclone/rclone-config.log";
+            StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/rclone/rclone-config.err.log";
           };
         };
+      };
 
       bisyncUnits =
         let
@@ -611,7 +741,7 @@ in
           )
         );
 
-      # Split bisyncUnits into services and timers for the final merge
+      # Split bisyncUnits into services and timers for the final merge.
       bisyncServices = lib.filterAttrs (n: v: !lib.hasSuffix "-timer" n) bisyncUnits;
       bisyncTimers = lib.mapAttrs' (n: v: lib.nameValuePair (lib.removeSuffix "-timer" n) v) (
         lib.filterAttrs (n: v: lib.hasSuffix "-timer" n) bisyncUnits
@@ -621,10 +751,15 @@ in
     lib.mkIf cfg.enable {
       home.packages = [ cfg.package ];
       systemd.user.services = lib.mkMerge [
-        rcloneConfigService
-        (mkRcloneSidecars "mounts")
-        (mkRcloneSidecars "serve")
+        mkSystemdConfigService
+        (mkRcloneSidecars "mounts" mkSystemdSidecar)
+        (mkRcloneSidecars "serve" mkSystemdSidecar)
         bisyncServices
+      ];
+      launchd.agents = lib.mkMerge [
+        mkLaunchdConfigService
+        (mkRcloneSidecars "mounts" mkLaunchdSidecar)
+        (mkRcloneSidecars "serve" mkLaunchdSidecar)
       ];
       systemd.user.timers = bisyncTimers;
     };

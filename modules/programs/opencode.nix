@@ -18,32 +18,39 @@ let
 
   jsonFormat = pkgs.formats.json { };
 
-  transformMcpServer = name: server: {
-    inherit name;
-    value = {
-      enabled = !(server.disabled or false);
+  toOpencodeShape =
+    s:
+    let
+      isRemote = s ? url && s.url != null;
+      renderedEnv = lib.hm.mcp.renderEnv (p: "{file:${p}}") (s.env or { });
+    in
+    lib.optionalAttrs (s.enabled or null != null) { inherit (s) enabled; }
+    // {
+      type = if isRemote then "remote" else "local";
     }
     // (
-      if server ? url then
-        {
-          type = "remote";
-          inherit (server) url;
-        }
-        // (lib.optionalAttrs (server ? headers) { inherit (server) headers; })
-      else if server ? command then
-        {
-          type = "local";
-          command = [ server.command ] ++ (server.args or [ ]);
-        }
-        // (lib.optionalAttrs (server ? env) { environment = server.env; })
+      if isRemote then
+        { inherit (s) url; } // lib.optionalAttrs (s.headers or { } != { }) { inherit (s) headers; }
       else
-        { }
+        {
+          command = [ s.command ] ++ (s.args or [ ]);
+        }
+        // lib.optionalAttrs (renderedEnv != { }) { environment = renderedEnv; }
     );
-  };
 
   transformedMcpServers =
     if cfg.enableMcpIntegration && config.programs.mcp.enable && config.programs.mcp.servers != { } then
-      lib.listToAttrs (lib.mapAttrsToList transformMcpServer config.programs.mcp.servers)
+      lib.mapAttrs (
+        _: server:
+        lib.hm.mcp.transformMcpServer {
+          inherit server;
+          extraTransforms = [ toOpencodeShape ];
+          exclude = [
+            "args"
+            "env"
+          ];
+        }
+      ) config.programs.mcp.servers
     else
       { };
 
@@ -63,9 +70,6 @@ let
     else
       cfg.package;
 
-  isStorePathString =
-    content: builtins.isString content && lib.hasPrefix "${builtins.storeDir}/" content;
-  isPathLikeContent = content: lib.isPath content || isStorePathString content;
 in
 {
   meta.maintainers = with lib.maintainers; [ delafthi ];
@@ -103,13 +107,11 @@ in
     settings = mkOption {
       inherit (jsonFormat) type;
       default = { };
-      example = literalExpression ''
-        {
-          model = "anthropic/claude-sonnet-4-20250514";
-          autoshare = false;
-          autoupdate = true;
-        }
-      '';
+      example = {
+        model = "anthropic/claude-sonnet-4-20250514";
+        autoshare = false;
+        autoupdate = true;
+      };
       description = ''
         Configuration written to {file}`$XDG_CONFIG_HOME/opencode/opencode.json`.
         See <https://opencode.ai/docs/config/> for the documentation.
@@ -121,14 +123,12 @@ in
     tui = mkOption {
       inherit (jsonFormat) type;
       default = { };
-      example = literalExpression ''
-        {
-          theme = "system";
-          keybinds = {
-            leader = "alt+b";
-          };
-        }
-      '';
+      example = {
+        theme = "system";
+        keybinds = {
+          leader = "alt+b";
+        };
+      };
 
       description = ''
         TUI-specific configuration written to {file}`$XDG_CONFIG_HOME/opencode/tui.json`.
@@ -439,7 +439,7 @@ in
         message = "`programs.opencode.tools` must be a directory when set to a path";
       }
       {
-        assertion = !isPathLikeContent cfg.skills || lib.pathIsDirectory cfg.skills;
+        assertion = !lib.hm.strings.isPathLike cfg.skills || lib.pathIsDirectory cfg.skills;
         message = "`programs.opencode.skills` must be a directory when set to a path";
       }
       {
@@ -526,7 +526,7 @@ in
         recursive = true;
       };
 
-      "opencode/skills" = mkIf (isPathLikeContent cfg.skills) {
+      "opencode/skills" = mkIf (lib.hm.strings.isPathLike cfg.skills) {
         source = cfg.skills;
         recursive = true;
       };
@@ -562,14 +562,14 @@ in
     )
     // lib.mapAttrs' (
       name: content:
-      if isPathLikeContent content && lib.pathIsDirectory content then
+      if lib.hm.strings.isPathLike content && lib.pathIsDirectory content then
         lib.nameValuePair "opencode/skills/${name}" {
           source = content;
           recursive = true;
         }
       else
         lib.nameValuePair "opencode/skills/${name}/SKILL.md" (
-          if isPathLikeContent content then { source = content; } else { text = content; }
+          if lib.hm.strings.isPathLike content then { source = content; } else { text = content; }
         )
     ) (if builtins.isAttrs cfg.skills then cfg.skills else { })
     // lib.optionalAttrs (builtins.isAttrs cfg.themes) (

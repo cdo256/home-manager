@@ -19,39 +19,57 @@ let
 
   upstreamConfigDir = "${config.home.homeDirectory}/.copilot";
 
-  isStorePathString =
-    content: builtins.isString content && lib.hasPrefix "${builtins.storeDir}/" content;
-
-  isPathLikeContent = content: lib.isPath content || isStorePathString content;
-
-  transformSingleServer =
-    _name: server:
+  forCopilotFormat =
+    server:
     let
-      server' = removeAttrs server [ "disabled" ];
-      type = server'.type or (if server' ? url then "http" else "local");
+      isLocal = server.type == "stdio";
     in
-    server'
+    server
     // {
-      inherit type;
+      type = if server.type == "stdio" then "local" else server.type or "local";
     }
-    // lib.optionalAttrs (type == "local") {
-      args = server'.args or [ ];
+    // lib.optionalAttrs isLocal {
+      args = server.args or [ ];
     }
-    // lib.optionalAttrs (!(server' ? tools)) {
+    // lib.optionalAttrs (!(server ? tools)) {
       tools = [ "*" ];
     };
 
+  enabledServers = lib.filterAttrs (
+    _: server: !(server.disabled or false) && (server ? url || server ? command)
+  ) config.programs.mcp.servers;
+
   transformedMcpServers =
-    if cfg.enableMcpIntegration && config.programs.mcp.enable && config.programs.mcp.servers != { } then
-      lib.mapAttrs transformSingleServer (
-        lib.filterAttrs (
-          _: server: !(server.disabled or false) && (server ? url || server ? command)
-        ) config.programs.mcp.servers
-      )
+    if cfg.enableMcpIntegration && config.programs.mcp.enable && enabledServers != { } then
+      lib.mapAttrs (
+        name: server:
+        lib.hm.mcp.transformMcpServer {
+          inherit server;
+          extraTransforms = [
+            lib.hm.mcp.addType
+            (lib.hm.mcp.wrapEnvFilesCommand { inherit pkgs name; })
+            forCopilotFormat
+          ];
+        }
+      ) enabledServers
     else
       { };
 
-  mergedMcpServers = transformedMcpServers // cfg.mcpServers;
+  mergedMcpServers =
+    transformedMcpServers
+    // lib.mapAttrs (
+      name: server:
+      lib.hm.mcp.transformMcpServer {
+        inherit server;
+        extraTransforms = [
+          lib.hm.mcp.addType
+          (lib.hm.mcp.wrapEnvFilesCommand {
+            inherit pkgs name;
+          })
+          forCopilotFormat
+        ];
+      }
+    ) cfg.mcpServers;
 in
 {
   meta.maintainers = [ lib.maintainers.ojsef39 ];
@@ -106,15 +124,13 @@ in
     settings = mkOption {
       type = lib.types.attrsOf jsonFormat.type;
       default = { };
-      example = literalExpression ''
-        {
-          model = "claude-sonnet-4-5";
-          theme = "default";
-          trusted_folders = [ "/home/user/projects" ];
-          renderMarkdown = true;
-          autoUpdate = false;
-        }
-      '';
+      example = {
+        model = "claude-sonnet-4-5";
+        theme = "default";
+        trusted_folders = [ "/home/user/projects" ];
+        renderMarkdown = true;
+        autoUpdate = false;
+      };
       description = ''
         Configuration written to {file}`config.json` inside
         {option}`programs.github-copilot-cli.configDir`.
@@ -346,11 +362,11 @@ in
   config = mkIf cfg.enable {
     assertions = [
       {
-        assertion = !isPathLikeContent cfg.agents || lib.pathIsDirectory cfg.agents;
+        assertion = !lib.hm.strings.isPathLike cfg.agents || lib.pathIsDirectory cfg.agents;
         message = "`programs.github-copilot-cli.agents` must be a directory when set to a path";
       }
       {
-        assertion = !isPathLikeContent cfg.skills || lib.pathIsDirectory cfg.skills;
+        assertion = !lib.hm.strings.isPathLike cfg.skills || lib.pathIsDirectory cfg.skills;
         message = "`programs.github-copilot-cli.skills` must be a directory when set to a path";
       }
     ];
@@ -381,19 +397,19 @@ in
       };
 
       "${cfg.configDir}/copilot-instructions.md" =
-        if isPathLikeContent cfg.context then
+        if lib.hm.strings.isPathLike cfg.context then
           { source = cfg.context; }
         else
           mkIf (cfg.context != "") {
             text = cfg.context;
           };
 
-      "${cfg.configDir}/agents" = mkIf (isPathLikeContent cfg.agents) {
+      "${cfg.configDir}/agents" = mkIf (lib.hm.strings.isPathLike cfg.agents) {
         source = cfg.agents;
         recursive = true;
       };
 
-      "${cfg.configDir}/skills" = mkIf (isPathLikeContent cfg.skills) {
+      "${cfg.configDir}/skills" = mkIf (lib.hm.strings.isPathLike cfg.skills) {
         source = cfg.skills;
         recursive = true;
       };
@@ -402,21 +418,21 @@ in
       lib.mapAttrs' (
         name: content:
         lib.nameValuePair "${cfg.configDir}/agents/${name}.agent.md" (
-          if isPathLikeContent content then { source = content; } else { text = content; }
+          if lib.hm.strings.isPathLike content then { source = content; } else { text = content; }
         )
       ) cfg.agents
     )
     // lib.optionalAttrs (builtins.isAttrs cfg.skills) (
       lib.mapAttrs' (
         name: content:
-        if isPathLikeContent content && lib.pathIsDirectory content then
+        if lib.hm.strings.isPathLike content && lib.pathIsDirectory content then
           lib.nameValuePair "${cfg.configDir}/skills/${name}" {
             source = content;
             recursive = true;
           }
         else
           lib.nameValuePair "${cfg.configDir}/skills/${name}/SKILL.md" (
-            if isPathLikeContent content then { source = content; } else { text = content; }
+            if lib.hm.strings.isPathLike content then { source = content; } else { text = content; }
           )
       ) cfg.skills
     );

@@ -8,6 +8,7 @@ let
   inherit (lib)
     getExe
     literalExpression
+    mkAfter
     mkIf
     mkOption
     mkOrder
@@ -188,11 +189,19 @@ in
     enableFishIntegration = lib.hm.shell.mkFishIntegrationOption { inherit config; };
 
     enableZshIntegration = lib.hm.shell.mkZshIntegrationOption { inherit config; };
+
+    enableNushellIntegration = lib.hm.shell.mkNushellIntegrationOption { inherit config; };
   };
 
   config = mkIf cfg.enable {
-    home.packages = [ cfg.package ];
+    assertions = [
+      {
+        assertion = cfg.enableNushellIntegration -> lib.versionAtLeast cfg.package.version "0.73.0";
+        message = "fzf package version must be 0.73.0 or greater for nushell integration";
+      }
+    ];
 
+    home.packages = [ cfg.package ];
     home.sessionVariables = lib.mapAttrs (_n: toString) (
       lib.filterAttrs (_n: v: v != [ ] && v != null) {
         FZF_ALT_C_COMMAND = cfg.changeDirWidgetCommand;
@@ -221,5 +230,19 @@ in
     programs.zsh.initContent = mkIf cfg.enableZshIntegration (mkOrder 910 zshIntegration);
 
     programs.fish.interactiveShellInit = mkIf cfg.enableFishIntegration (mkOrder 200 fishIntegration);
+
+    # Initialize after other completion integrations, such as carapace.
+    # fzf preserves the previous external completer and falls back to it
+    # when its own completer does not apply.
+    programs.nushell = lib.mkIf cfg.enableNushellIntegration {
+      extraConfig = mkAfter ''
+        source ${
+          pkgs.runCommand "nushell-fzf-integration.nu" { } ''
+            ${lib.getExe cfg.package} --nushell > $out
+          ''
+        }
+      '';
+    };
+
   };
 }

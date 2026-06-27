@@ -91,6 +91,12 @@
     github = "b1kku";
     githubId = 77858854;
   };
+  bittner = {
+    name = "Peter Bittner";
+    email = "peter@painless.software";
+    github = "bittner";
+    githubId = 665072;
+  };
   bjpbakker = {
     email = "bart@thesoftwarecraft.com";
     github = "bjpbakker";
@@ -114,6 +120,12 @@
     email = "ckgxrg@ckgxrg.io";
     github = "ckgxrg-salt";
     githubId = 165614491;
+  };
+  csanthiago = {
+    name = "csanthiago";
+    email = "git@csanthiago.dev";
+    github = "csanthiago";
+    githubId = 8346803;
   };
   d-dervishi = {
     email = "david.dervishi@epfl.ch";

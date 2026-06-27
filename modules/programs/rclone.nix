@@ -161,6 +161,7 @@ let
     in
     {
       enable = true;
+      domain = lib.mkDefault "user";
       config = {
         ProgramArguments = [
           (lib.getExe rcloneSidecarWrapper)
@@ -668,6 +669,7 @@ in
       mkLaunchdConfigService = lib.mkIf (cfg.remotes != { }) {
         rclone-config = {
           enable = true;
+          domain = lib.mkDefault "user";
           config = {
             ProgramArguments = [ (lib.getExe rcloneConfigScript) ];
             RunAtLoad = true;

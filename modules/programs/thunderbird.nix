@@ -60,7 +60,7 @@ let
   profilesWithId = lib.imap0 (i: v: v // { id = toString i; }) (attrValues cfg.profiles);
 
   profilesIni =
-    lib.foldl lib.recursiveUpdate
+    lib.foldl' lib.recursiveUpdate
       {
         General = {
           StartWithLastProfile = 1;
@@ -263,16 +263,14 @@ let
     // optionalAttrs (account.ews != null && account.ews.authentication != null) {
       "mail.server.server_${id}.authMethod" = toThunderbirdAuthMethod account.ews.authentication;
     }
-    // builtins.foldl' (a: b: a // b) { } (map (address: toThunderbirdSMTP account address) addresses)
+    // lib.mergeAttrsList (map (address: toThunderbirdSMTP account address) addresses)
     // optionalAttrs (account.smtp != null && account.primary) {
       "mail.smtp.defaultserver" = "smtp_${id}";
     }
     // optionalAttrs (account.smtp == null && account.ews != null && account.primary) {
       "mail.smtp.defaultserver" = "ews_${id}";
     }
-    // builtins.foldl' (a: b: a // b) { } (
-      map (address: toThunderbirdIdentity account address) addresses
-    )
+    // lib.mergeAttrsList (map (address: toThunderbirdIdentity account address) addresses)
     // account.thunderbird.settings id;
 
   toThunderbirdCalendar =
@@ -1176,7 +1174,7 @@ in
                 );
             in
             {
-              text = mkUserJs (builtins.foldl' (a: b: a // b) { } (
+              text = mkUserJs (lib.mergeAttrsList (
                 [
                   cfg.settings
 

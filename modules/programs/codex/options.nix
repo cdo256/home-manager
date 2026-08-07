@@ -125,14 +125,26 @@ in
     };
 
     hooks = lib.mkOption {
-      inherit (jsonFormat) type;
+      type = lib.types.either jsonFormat.type lib.types.path;
       default = { };
       description = ''
         Lifecycle hook events written to {file}`CODEX_HOME/hooks.json`.
 
-        This option uses the same event structure as
-        {option}`programs.codex.settings.hooks` and writes it under the
+        This option can either be a hook event attribute set, a path to a
+        complete hooks JSON file, or a path to a hook bundle directory
+        containing {file}`hooks.json` and supporting hook scripts.
+
+        Attribute set values use the same event structure as
+        {option}`programs.codex.settings.hooks` and are written under the
         top-level `hooks` key expected by Codex's JSON hooks file.
+
+        Directory values install {file}`hooks.json` to
+        {file}`CODEX_HOME/hooks.json` and install the full directory to
+        the active Codex home hooks directory. In the default layout, commands
+        can reference bundled scripts with paths such as
+        {file}`$HOME/.codex/hooks/my-hook`. When
+        {option}`home.preferXdgDirectories` is enabled, use
+        {file}`$CODEX_HOME/hooks/my-hook`.
 
         Hooks can also be configured inline through
         {option}`programs.codex.settings.hooks`; prefer using only one hook

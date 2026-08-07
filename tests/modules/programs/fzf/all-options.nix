@@ -6,14 +6,21 @@
       "--height 40%"
       "--border"
     ];
-    fileWidgetCommand = "fd --type f";
-    fileWidgetOptions = [ "--preview 'head {}'" ];
-    changeDirWidgetCommand = "fd --type d";
-    changeDirWidgetOptions = [ "--preview 'tree -C {} | head -200'" ];
-    historyWidgetOptions = [
-      "--sort"
-      "--exact"
-    ];
+    fileWidget = {
+      command = "fd --type f";
+      options = [ "--preview 'head {}'" ];
+    };
+    changeDirWidget = {
+      command = "fd --type d";
+      options = [ "--preview 'tree -C {} | head -200'" ];
+    };
+    historyWidget = {
+      command = "";
+      options = [
+        "--sort"
+        "--exact"
+      ];
+    };
     colors = {
       bg = "#1e1e1e";
     };
@@ -43,6 +50,8 @@
       'FZF_ALT_C_OPTS="--preview'
 
     # Test history widget
+    assertFileRegex home-path/etc/profile.d/hm-session-vars.sh \
+      'FZF_CTRL_R_COMMAND=""'
     assertFileRegex home-path/etc/profile.d/hm-session-vars.sh \
       'FZF_CTRL_R_OPTS="--sort --exact"'
 
